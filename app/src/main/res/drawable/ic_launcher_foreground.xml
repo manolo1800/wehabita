@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:pivotX="54"
+        android:pivotY="54"
+        android:scaleX="0.82"
+        android:scaleY="0.82">
+        <!-- Modern stylized house silhouette with warm gradient -->
+        <!-- Roof -->
+        <path
+            android:pathData="M54,23 L22,48 C20.9,48.8 21.4,50.5 22.8,50.5 L27,50.5 L27,81 C27,83.2 28.8,85 31,85 L47,85 L47,65 C47,63.3 48.3,62 50,62 L58,62 C59.7,62 61,63.3 61,65 L61,85 L77,85 C79.2,85 81,83.2 81,81 L81,50.5 L85.2,50.5 C86.6,50.5 87.1,48.8 86,48 Z">
+            <aapt:attr name="android:fillColor">
+                <gradient
+                    android:startX="22"
+                    android:startY="23"
+                    android:endX="86"
+                    android:endY="85"
+                    android:type="linear">
+                    <item android:offset="0.0" android:color="#FF7043" />
+                    <item android:offset="0.6" android:color="#FFA726" />
+                    <item android:offset="1.0" android:color="#FFCC80" />
+                </gradient>
+            </aapt:attr>
+        </path>
+        <!-- Heart / Collaboration checkmark badge on top right -->
+        <path
+            android:fillColor="#4CAF50"
+            android:pathData="M78,40m-13,0a13,13 0,1,1 26,0a13,13 0,1,1 -26,0" />
+        <!-- White checkmark inside badge -->
+        <path
+            android:fillColor="#00000000"
+            android:strokeColor="#FFFFFF"
+            android:strokeWidth="3"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round"
+            android:pathData="M72,40 L76,44 L84,36" />
+        <!-- Chimney / Spark -->
+        <path
+            android:fillColor="#FFD54F"
+            android:pathData="M69,27 L76,27 L76,37 L69,32 Z" />
+    </group>
+</vector>

@@ -1,0 +1,6 @@
+{
+  "name": "WeHabita",
+  "description": "Gestión inteligente y colaborativa del hogar y la convivencia familiar o de pareja",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
