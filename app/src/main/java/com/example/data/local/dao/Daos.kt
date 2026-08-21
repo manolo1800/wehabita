@@ -9,6 +9,9 @@ interface UserDao {
     @Query("SELECT * FROM usuarios WHERE activo = 1 ORDER BY nombre ASC")
     fun getAllActiveUsers(): Flow<List<UserEntity>>
 
+    @Query("SELECT * FROM usuarios")
+    suspend fun getAllUsersList(): List<UserEntity>
+
     @Query("SELECT * FROM usuarios WHERE id = :userId")
     suspend fun getUserById(userId: Int): UserEntity?
 
@@ -21,6 +24,9 @@ interface UserDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertUser(user: UserEntity): Long
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertUsers(users: List<UserEntity>)
+
     @Update
     suspend fun updateUser(user: UserEntity)
 }
@@ -29,6 +35,9 @@ interface UserDao {
 interface HomeDao {
     @Query("SELECT * FROM hogares ORDER BY fecha_creacion DESC")
     fun getAllHomes(): Flow<List<HomeEntity>>
+
+    @Query("SELECT * FROM hogares")
+    suspend fun getAllHomesList(): List<HomeEntity>
 
     @Query("""
         SELECT h.* FROM hogares h
@@ -46,6 +55,9 @@ interface HomeDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertHome(home: HomeEntity): Long
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertHomes(homes: List<HomeEntity>)
 
     @Update
     suspend fun updateHome(home: HomeEntity)
@@ -66,11 +78,17 @@ interface HomeMemberDao {
     @Query("SELECT * FROM miembros_hogar WHERE hogar_id = :homeId AND activo = 1")
     fun getMembersWithUserForHome(homeId: Int): Flow<List<MemberWithUser>>
 
+    @Query("SELECT * FROM miembros_hogar")
+    suspend fun getAllMembersList(): List<HomeMemberEntity>
+
     @Query("SELECT * FROM miembros_hogar WHERE hogar_id = :homeId AND usuario_id = :userId LIMIT 1")
     suspend fun getMember(homeId: Int, userId: Int): HomeMemberEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertMember(member: HomeMemberEntity): Long
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertMembers(members: List<HomeMemberEntity>)
 
     @Update
     suspend fun updateMember(member: HomeMemberEntity)
@@ -138,11 +156,17 @@ interface TaskDao {
     @Query("SELECT * FROM tareas WHERE hogar_id = :homeId AND activa = 1 ORDER BY fecha_creacion DESC")
     fun getTasksForHome(homeId: Int): Flow<List<TaskEntity>>
 
+    @Query("SELECT * FROM tareas")
+    suspend fun getAllTasksList(): List<TaskEntity>
+
     @Query("SELECT * FROM tareas WHERE id = :taskId")
     suspend fun getTaskById(taskId: Int): TaskEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertTask(task: TaskEntity): Long
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertTasks(tasks: List<TaskEntity>)
 
     @Update
     suspend fun updateTask(task: TaskEntity)
@@ -154,11 +178,17 @@ interface TaskDao {
     @Query("SELECT * FROM tarea_horarios WHERE tarea_id = :taskId ORDER BY hora_inicio ASC")
     fun getSchedulesForTask(taskId: Int): Flow<List<TaskScheduleEntity>>
 
+    @Query("SELECT * FROM tarea_horarios")
+    suspend fun getAllSchedulesList(): List<TaskScheduleEntity>
+
     @Query("SELECT * FROM tarea_horarios WHERE tarea_id = :taskId ORDER BY hora_inicio ASC")
     suspend fun getSchedulesForTaskSync(taskId: Int): List<TaskScheduleEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertSchedule(schedule: TaskScheduleEntity): Long
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertSchedules(schedules: List<TaskScheduleEntity>)
 
     @Query("DELETE FROM tarea_horarios WHERE tarea_id = :taskId")
     suspend fun clearSchedulesForTask(taskId: Int)
@@ -167,11 +197,17 @@ interface TaskDao {
     @Query("SELECT * FROM tarea_asignaciones WHERE tarea_id = :taskId")
     fun getAssignmentsForTask(taskId: Int): Flow<List<TaskAssignmentEntity>>
 
+    @Query("SELECT * FROM tarea_asignaciones")
+    suspend fun getAllAssignmentsList(): List<TaskAssignmentEntity>
+
     @Query("SELECT usuario_id FROM tarea_asignaciones WHERE tarea_id = :taskId")
     suspend fun getAssignedUserIdsForTask(taskId: Int): List<Int>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAssignment(assignment: TaskAssignmentEntity)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAssignments(assignments: List<TaskAssignmentEntity>)
 
     @Query("DELETE FROM tarea_asignaciones WHERE tarea_id = :taskId")
     suspend fun clearAssignmentsForTask(taskId: Int)
@@ -211,11 +247,17 @@ interface TaskOccurrenceDao {
     """)
     fun getAllOccurrencesForHome(homeId: Int): Flow<List<OccurrenceWithDetails>>
 
+    @Query("SELECT * FROM tarea_ocurrencias")
+    suspend fun getAllOccurrencesList(): List<TaskOccurrenceEntity>
+
     @Query("SELECT * FROM tarea_ocurrencias WHERE tarea_id = :taskId AND fecha = :date AND hora_inicio = :time LIMIT 1")
     suspend fun getOccurrence(taskId: Int, date: String, time: String): TaskOccurrenceEntity?
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertOccurrence(occurrence: TaskOccurrenceEntity): Long
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertOccurrences(occurrences: List<TaskOccurrenceEntity>)
 
     @Update
     suspend fun updateOccurrence(occurrence: TaskOccurrenceEntity)
@@ -233,11 +275,17 @@ interface PenaltyDao {
     @Query("SELECT * FROM penalizaciones WHERE hogar_id = :homeId ORDER BY fecha_creacion DESC")
     fun getPenaltiesForHome(homeId: Int): Flow<List<PenaltyEntity>>
 
+    @Query("SELECT * FROM penalizaciones")
+    suspend fun getAllPenaltiesList(): List<PenaltyEntity>
+
     @Query("SELECT * FROM penalizaciones WHERE id = :penaltyId")
     suspend fun getPenaltyById(penaltyId: Int): PenaltyEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertPenalty(penalty: PenaltyEntity): Long
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertPenalties(penalties: List<PenaltyEntity>)
 
     @Update
     suspend fun updatePenalty(penalty: PenaltyEntity)
@@ -245,11 +293,17 @@ interface PenaltyDao {
     @Query("SELECT usuario_id FROM penalizacion_usuarios WHERE penalizacion_id = :penaltyId")
     fun getAssignedUserIds(penaltyId: Int): Flow<List<Int>>
 
+    @Query("SELECT * FROM penalizacion_usuarios")
+    suspend fun getAllPenaltyUsersList(): List<PenaltyUserEntity>
+
     @Query("SELECT usuario_id FROM penalizacion_usuarios WHERE penalizacion_id = :penaltyId")
     suspend fun getAssignedUserIdsSync(penaltyId: Int): List<Int>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertPenaltyUser(penaltyUser: PenaltyUserEntity)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertPenaltyUsers(penaltyUsers: List<PenaltyUserEntity>)
 
     @Query("DELETE FROM penalizacion_usuarios WHERE penalizacion_id = :penaltyId")
     suspend fun clearPenaltyUsers(penaltyId: Int)
@@ -260,11 +314,17 @@ interface ProblemDao {
     @Query("SELECT * FROM problemas WHERE hogar_id = :homeId ORDER BY fecha_creacion DESC")
     fun getProblemsForHome(homeId: Int): Flow<List<ProblemEntity>>
 
+    @Query("SELECT * FROM problemas")
+    suspend fun getAllProblemsList(): List<ProblemEntity>
+
     @Query("SELECT * FROM problemas WHERE id = :problemId")
     suspend fun getProblemById(problemId: Int): ProblemEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertProblem(problem: ProblemEntity): Long
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertProblems(problems: List<ProblemEntity>)
 
     @Update
     suspend fun updateProblem(problem: ProblemEntity)
@@ -272,17 +332,29 @@ interface ProblemDao {
     @Query("SELECT usuario_id FROM problema_usuarios WHERE problema_id = :problemId")
     fun getInvolvedUserIds(problemId: Int): Flow<List<Int>>
 
+    @Query("SELECT * FROM problema_usuarios")
+    suspend fun getAllProblemUsersList(): List<ProblemUserEntity>
+
     @Query("SELECT usuario_id FROM problema_usuarios WHERE problema_id = :problemId")
     suspend fun getInvolvedUserIdsSync(problemId: Int): List<Int>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertProblemUser(pu: ProblemUserEntity)
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertProblemUsers(pus: List<ProblemUserEntity>)
+
     @Query("SELECT * FROM problema_puntos_vista WHERE problema_id = :problemId ORDER BY fecha_creacion ASC")
     fun getPointsOfViewForProblem(problemId: Int): Flow<List<ProblemPointOfViewEntity>>
 
+    @Query("SELECT * FROM problema_puntos_vista")
+    suspend fun getAllPointsOfViewList(): List<ProblemPointOfViewEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertPointOfView(pov: ProblemPointOfViewEntity): Long
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertPointsOfView(povs: List<ProblemPointOfViewEntity>)
 }
 
 @Dao
@@ -290,8 +362,14 @@ interface NeedListDao {
     @Query("SELECT * FROM listas_necesidades WHERE hogar_id = :homeId ORDER BY fecha_creacion DESC")
     fun getListsForHome(homeId: Int): Flow<List<NeedListEntity>>
 
+    @Query("SELECT * FROM listas_necesidades")
+    suspend fun getAllNeedListsList(): List<NeedListEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertList(list: NeedListEntity): Long
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertLists(lists: List<NeedListEntity>)
 
     @Update
     suspend fun updateList(list: NeedListEntity)
@@ -303,8 +381,14 @@ interface NeedListDao {
     @Query("SELECT * FROM items_necesidad WHERE lista_id = :listId ORDER BY id DESC")
     fun getItemsForList(listId: Int): Flow<List<NeedItemEntity>>
 
+    @Query("SELECT * FROM items_necesidad")
+    suspend fun getAllNeedItemsList(): List<NeedItemEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertItem(item: NeedItemEntity): Long
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertItems(items: List<NeedItemEntity>)
 
     @Update
     suspend fun updateItem(item: NeedItemEntity)
@@ -318,11 +402,17 @@ interface GoalDao {
     @Query("SELECT * FROM objetivos WHERE hogar_id = :homeId ORDER BY fecha_creacion DESC")
     fun getGoalsForHome(homeId: Int): Flow<List<GoalEntity>>
 
+    @Query("SELECT * FROM objetivos")
+    suspend fun getAllGoalsList(): List<GoalEntity>
+
     @Query("SELECT * FROM objetivos WHERE id = :goalId")
     suspend fun getGoalById(goalId: Int): GoalEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertGoal(goal: GoalEntity): Long
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertGoals(goals: List<GoalEntity>)
 
     @Update
     suspend fun updateGoal(goal: GoalEntity)
@@ -334,8 +424,14 @@ interface GoalDao {
     @Query("SELECT * FROM objetivo_puntos WHERE objetivo_id = :goalId ORDER BY orden ASC, id ASC")
     fun getPointsForGoal(goalId: Int): Flow<List<GoalPointEntity>>
 
+    @Query("SELECT * FROM objetivo_puntos")
+    suspend fun getAllGoalPointsList(): List<GoalPointEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertGoalPoint(point: GoalPointEntity): Long
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertGoalPoints(points: List<GoalPointEntity>)
 
     @Update
     suspend fun updateGoalPoint(point: GoalPointEntity)
@@ -343,3 +439,31 @@ interface GoalDao {
     @Query("DELETE FROM objetivo_puntos WHERE id = :pointId")
     suspend fun deleteGoalPoint(pointId: Int)
 }
+
+@Dao
+interface SyncQueueDao {
+    @Query("SELECT * FROM cola_sincronizacion ORDER BY id ASC")
+    fun getAllPendingQueue(): Flow<List<SyncQueueEntity>>
+
+    @Query("SELECT * FROM cola_sincronizacion ORDER BY id ASC")
+    suspend fun getAllPendingList(): List<SyncQueueEntity>
+
+    @Query("SELECT COUNT(*) FROM cola_sincronizacion")
+    fun getPendingCount(): Flow<Int>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun enqueue(item: SyncQueueEntity): Long
+
+    @Delete
+    suspend fun deleteItem(item: SyncQueueEntity)
+
+    @Query("DELETE FROM cola_sincronizacion WHERE id = :id")
+    suspend fun deleteById(id: Int)
+
+    @Update
+    suspend fun updateItem(item: SyncQueueEntity)
+
+    @Query("DELETE FROM cola_sincronizacion")
+    suspend fun clearAll()
+}
+

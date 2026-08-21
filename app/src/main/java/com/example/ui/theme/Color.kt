@@ -57,6 +57,8 @@ val OnTealTertiaryContainer = Color.White
 
 val SuccessGreen = ElegantSuccessGreen
 val SuccessContainer = ElegantSuccessContainer
+val ElegantShoppingOrange = Color(0xFFFFB74D)
+val ElegantShoppingContainer = Color(0xFF663C00)
 val WarningOrange = ElegantWarningAmber
 val WarningContainer = ElegantWarningContainer
 val ErrorRed = ElegantPenaltiesRed

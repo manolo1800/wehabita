@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -26,6 +27,7 @@ import androidx.compose.ui.unit.sp
 import com.example.ui.components.MemberAvatar
 import com.example.ui.theme.*
 import com.example.viewmodel.WeHabitaViewModel
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -179,65 +181,356 @@ fun SettingsScreen(
                 }
             }
 
-            // PostgreSQL & Cloud Database Connectivity Card
+            // REST Services Server Connection & Offline Sync Card
             item {
+                val currentRestUrl by viewModel.restServerUrl.collectAsState()
+                var serverUrlInput by remember { mutableStateOf(currentRestUrl) }
+                var showUrlConfig by remember { mutableStateOf(false) }
+                val lastSyncStatus by viewModel.lastSyncStatus.collectAsState()
+                val isSyncing by viewModel.isSyncing.collectAsState()
+                val pendingCount by viewModel.pendingSyncCount.collectAsState()
+                var syncFeedback by remember { mutableStateOf<String?>(null) }
+                val scope = rememberCoroutineScope()
+
                 Text(
-                    text = "Arquitectura de Datos & Servidor",
+                    text = "Servidor de Servicios REST & Sincronización",
                     fontWeight = FontWeight.Bold,
-                    style = MaterialTheme.typography.titleMedium
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onBackground
                 )
                 Spacer(modifier = Modifier.height(6.dp))
                 Card(
                     shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                    colors = CardDefaults.cardColors(containerColor = ElegantDarkSurface),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, ElegantDarkOutline),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(
-                                modifier = Modifier
-                                    .size(10.dp)
-                                    .clip(CircleShape)
-                                    .background(SuccessGreen)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "Base de Datos Local SQLite / Room: Activa & Sembrada",
-                                fontWeight = FontWeight.Bold,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = SuccessGreen
-                            )
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(10.dp)
+                                        .clip(CircleShape)
+                                        .background(if (pendingCount > 0) ElegantShoppingOrange else ElegantSuccessGreen)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = if (pendingCount > 0) "Modo Offline ($pendingCount pendientes)" else "REST API Conectado",
+                                    fontWeight = FontWeight.Bold,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = if (pendingCount > 0) ElegantShoppingOrange else ElegantSuccessGreen
+                                )
+                            }
+
+                            TextButton(onClick = { showUrlConfig = !showUrlConfig }) {
+                                Text(if (showUrlConfig) "Ocultar URL" else "Cambiar URL", fontSize = 12.sp)
+                            }
                         }
 
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        Text(
-                            text = "Configuración PostgreSQL Remoto de Respaldo:",
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
+                        // Connection Info Badge
                         Surface(
                             shape = RoundedCornerShape(8.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                            color = ElegantDarkBackground,
+                            border = androidx.compose.foundation.BorderStroke(1.dp, ElegantDarkOutline),
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Column(modifier = Modifier.padding(10.dp)) {
                                 Text(
-                                    text = "postgresql://wehabita:***@192.168.0.105:2345/wehabita",
+                                    text = "Endpoint: $currentRestUrl",
                                     fontFamily = FontFamily.Monospace,
                                     fontSize = 11.sp,
-                                    color = MaterialTheme.colorScheme.onSurface
+                                    color = ElegantPurplePrimary,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = "Estado: $lastSyncStatus",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                if (pendingCount > 0) {
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text(
+                                        text = "⏳ $pendingCount operación(es) local(es) encoladas en SQLite esperando envío al servidor",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = ElegantShoppingOrange,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            }
+                        }
+
+                        if (syncFeedback != null) {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = ElegantPurpleContainer.copy(alpha = 0.15f),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = syncFeedback ?: "",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = ElegantPurplePrimary,
+                                    modifier = Modifier.padding(10.dp)
+                                )
+                            }
+                        }
+
+                        if (showUrlConfig) {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedTextField(
+                                    value = serverUrlInput,
+                                    onValueChange = { 
+                                        serverUrlInput = it
+                                        viewModel.updateRestServerUrl(it)
+                                    },
+                                    label = { Text("URL Base del Servidor REST") },
+                                    placeholder = { Text("http://192.168.0.105:3002/api/") },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+                        }
+
+                        // Action Buttons
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Button(
+                                onClick = {
+                                    viewModel.updateRestServerUrl(serverUrlInput)
+                                    syncFeedback = "Sincronizando con los servicios REST..."
+                                    viewModel.syncWithRestServer { success, msg ->
+                                        syncFeedback = msg
+                                    }
+                                },
+                                enabled = !isSyncing,
+                                colors = ButtonDefaults.buttonColors(containerColor = ElegantPurplePrimary, contentColor = ElegantPurpleDark),
+                                modifier = Modifier
+                                    .weight(1.3f)
+                                    .testTag("button_sync_rest_server")
+                            ) {
+                                if (isSyncing) {
+                                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = ElegantPurpleDark)
+                                } else {
+                                    Icon(Icons.Filled.Sync, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Sincronizar Servicios", fontWeight = FontWeight.Bold)
+                                }
+                            }
+
+                            OutlinedButton(
+                                onClick = {
+                                    viewModel.updateRestServerUrl(serverUrlInput)
+                                    syncFeedback = "Probando endpoint REST (/api/health)..."
+                                    viewModel.testRestApiConnection(serverUrlInput) { success, msg ->
+                                        syncFeedback = msg
+                                    }
+                                },
+                                enabled = !isSyncing,
+                                modifier = Modifier
+                                    .weight(0.9f)
+                                    .testTag("button_test_rest_connection")
+                            ) {
+                                Icon(Icons.Outlined.CheckCircle, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Probar")
+                            }
+                        }
+
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = ElegantDarkBackground,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp)) {
+                                Text(
+                                    text = "💡 Arquitectura Offline-First con SQLite & REST API:",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp,
+                                    color = ElegantPurplePrimary
                                 )
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Text(
-                                    text = "• Driver: Room / SQLite 3 (Offline-First)\n• Schema: 1:1 conforme a requerimientos y MySQL/PostgreSQL\n• Convivencia, Tareas fijas con horarios múltiples y penalizaciones activas",
+                                    text = "• Las acciones se guardan instantáneamente en la base de datos local SQLite (Room) para funcionar 100% sin conexión.\n• Cuando no hay conexión, las operaciones se registran en una cola local protegida.\n• Al recuperar conexión o pulsar 'Sincronizar Servicios', se envían automáticamente todas las modificaciones pendientes a http://192.168.0.105:3002/api/.",
                                     fontSize = 11.sp,
-                                    color = MaterialTheme.colorScheme.outline
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
+                        }
+
+                        // Diagnostic Logs Section
+                        val diagnosticLogs by viewModel.diagnosticLogs.collectAsState()
+                        var showLogsSection by remember { mutableStateOf(false) }
+
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = ElegantDarkSurface,
+                            border = androidx.compose.foundation.BorderStroke(1.dp, ElegantPurplePrimary.copy(alpha = 0.4f)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(
+                                            imageVector = Icons.Default.BugReport,
+                                            contentDescription = null,
+                                            tint = ElegantPurplePrimary,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = "Registro de Diagnóstico (${diagnosticLogs.size})",
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 13.sp,
+                                            color = ElegantPurplePrimary
+                                        )
+                                    }
+                                    TextButton(onClick = { showLogsSection = !showLogsSection }) {
+                                        Text(if (showLogsSection) "Ocultar" else "Ver Logs", fontSize = 12.sp)
+                                    }
+                                }
+
+                                if (showLogsSection) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        OutlinedButton(
+                                            onClick = {
+                                                val text = viewModel.getDiagnosticLogsAsText()
+                                                clipboardManager.setText(AnnotatedString(text))
+                                                syncFeedback = "¡Logs de diagnóstico copiados al portapapeles!"
+                                            },
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Icon(Icons.Filled.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("Copiar Logs", fontSize = 12.sp)
+                                        }
+
+                                        OutlinedButton(
+                                            onClick = { viewModel.clearDiagnosticLogs() },
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Icon(Icons.Filled.DeleteSweep, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("Limpiar", fontSize = 12.sp)
+                                        }
+                                    }
+
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = androidx.compose.ui.graphics.Color(0xFF0F0B18),
+                                        border = androidx.compose.foundation.BorderStroke(1.dp, androidx.compose.ui.graphics.Color(0xFF2E2442)),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .heightIn(max = 240.dp)
+                                    ) {
+                                        if (diagnosticLogs.isEmpty()) {
+                                            Box(modifier = Modifier.padding(16.dp), contentAlignment = Alignment.Center) {
+                                                Text(
+                                                    "No hay logs de diagnóstico aún. Realiza una prueba o sincronización para ver el registro en tiempo real.",
+                                                    fontSize = 11.sp,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                        } else {
+                                            LazyColumn(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(8.dp),
+                                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                                            ) {
+                                                items(diagnosticLogs.reversed()) { log ->
+                                                    val color = when (log.severity) {
+                                                        com.example.data.repository.LogSeverity.ERROR -> androidx.compose.ui.graphics.Color(0xFFFF5252)
+                                                        com.example.data.repository.LogSeverity.WARN -> androidx.compose.ui.graphics.Color(0xFFFFB74D)
+                                                        com.example.data.repository.LogSeverity.SUCCESS -> androidx.compose.ui.graphics.Color(0xFF69F0AE)
+                                                        com.example.data.repository.LogSeverity.INFO -> androidx.compose.ui.graphics.Color(0xFF80D8FF)
+                                                        com.example.data.repository.LogSeverity.DEBUG -> androidx.compose.ui.graphics.Color(0xFFB0BEC5)
+                                                    }
+                                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                                        Text(
+                                                            text = "[${log.formattedTime}] [${log.severity.name}] [${log.tag}] ${log.message}",
+                                                            fontFamily = FontFamily.Monospace,
+                                                            fontSize = 10.sp,
+                                                            color = color,
+                                                            fontWeight = if (log.severity == com.example.data.repository.LogSeverity.ERROR) FontWeight.Bold else FontWeight.Normal
+                                                        )
+                                                        if (!log.details.isNullOrBlank()) {
+                                                            Text(
+                                                                text = log.details,
+                                                                fontFamily = FontFamily.Monospace,
+                                                                fontSize = 9.sp,
+                                                                color = color.copy(alpha = 0.85f),
+                                                                modifier = Modifier.padding(start = 12.dp, top = 2.dp)
+                                                            )
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Logout & Session Card
+            item {
+                Card(
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = ElegantDarkSurface),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, ElegantPenaltiesRed.copy(alpha = 0.4f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Text(
+                            text = "Sesión Activa",
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onBackground
+                        )
+                        Text(
+                            text = "Conectado actualmente como ${currentUser?.nombre ?: "Usuario"} (@${currentUser?.username ?: ""})",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Button(
+                            onClick = {
+                                viewModel.logout()
+                                onBack()
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = ElegantPenaltiesRed.copy(alpha = 0.2f),
+                                contentColor = ElegantPenaltiesRed
+                            ),
+                            shape = RoundedCornerShape(100.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("button_logout")
+                        ) {
+                            Icon(Icons.Filled.Logout, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Cerrar Sesión", fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -247,14 +540,16 @@ fun SettingsScreen(
             item {
                 Card(
                     shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)),
+                    colors = CardDefaults.cardColors(containerColor = ElegantDarkSurface.copy(alpha = 0.5f)),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, ElegantDarkOutline),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
                         Text(
                             text = "WeHabita v1.0",
                             fontWeight = FontWeight.Bold,
-                            style = MaterialTheme.typography.titleMedium
+                            style = MaterialTheme.typography.titleMedium,
+                            color = ElegantPurplePrimary
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(

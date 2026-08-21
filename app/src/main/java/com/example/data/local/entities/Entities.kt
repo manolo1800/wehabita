@@ -563,3 +563,21 @@ data class GoalPointEntity(
     val completado_por: Int? = null,
     val orden: Int = 0
 )
+
+// 20. Cola de Sincronización Offline (Mutaciones pendientes para la API REST)
+@Entity(
+    tableName = "cola_sincronizacion",
+    indices = [Index(value = ["fecha_creacion"])]
+)
+data class SyncQueueEntity(
+    @PrimaryKey(autoGenerate = true) val id: Int = 0,
+    val endpoint: String,
+    val http_method: String, // "POST", "PUT", "PATCH", "DELETE"
+    val payload_json: String? = null,
+    val accion: String, // e.g. "CREAR_TAREA", "MARCAR_OCURRENCIA", "CREAR_OBJETIVO"
+    val descripcion: String,
+    val fecha_creacion: Long = System.currentTimeMillis(),
+    val intentos: Int = 0,
+    val ultimo_error: String? = null
+)
+

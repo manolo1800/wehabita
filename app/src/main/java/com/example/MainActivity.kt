@@ -11,6 +11,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import com.example.ui.components.*
+import com.example.ui.screens.auth.AuthScreen
 import com.example.ui.screens.conflicts.CreateProblemDialog
 import com.example.ui.screens.conflicts.ProblemsScreen
 import com.example.ui.screens.goals.CreateGoalDialog
@@ -48,6 +49,12 @@ fun WeHabitaApp(viewModel: WeHabitaViewModel) {
     val userHomes by viewModel.userHomes.collectAsState()
 
     var currentDestination by remember { mutableStateOf(NavigationDestination.DASHBOARD) }
+
+    // If not logged in, render AuthScreen
+    if (currentUser == null) {
+        AuthScreen(viewModel = viewModel)
+        return
+    }
 
     // Dialog & Sheet States
     var showUserSwitchSheet by remember { mutableStateOf(false) }

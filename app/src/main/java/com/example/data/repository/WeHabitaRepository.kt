@@ -4,13 +4,23 @@ import com.example.data.local.WeHabitaDatabase
 import com.example.data.local.dao.MemberWithUser
 import com.example.data.local.dao.OccurrenceWithDetails
 import com.example.data.local.entities.*
+import com.example.data.remote.api.ApiClient
+import com.example.data.remote.dto.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.launch
+import org.json.JSONArray
+import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
 
-class WeHabitaRepository(private val db: WeHabitaDatabase) {
+class WeHabitaRepository(
+    private val db: WeHabitaDatabase,
+    val restSyncManager: RestSyncManager = RestSyncManager(db)
+) {
     private val userDao = db.userDao()
     private val homeDao = db.homeDao()
     private val homeMemberDao = db.homeMemberDao()
@@ -22,6 +32,13 @@ class WeHabitaRepository(private val db: WeHabitaDatabase) {
     private val problemDao = db.problemDao()
     private val needListDao = db.needListDao()
     private val goalDao = db.goalDao()
+    private val syncQueueDao = db.syncQueueDao()
+
+    private val bgScope = CoroutineScope(Dispatchers.IO)
+
+    // Pending Sync Flow
+    fun getPendingSyncCount(): Flow<Int> = syncQueueDao.getPendingCount()
+    fun getPendingSyncQueue(): Flow<List<SyncQueueEntity>> = syncQueueDao.getAllPendingQueue()
 
     // --- Users ---
     fun getAllUsers(): Flow<List<UserEntity>> = userDao.getAllActiveUsers()
@@ -40,7 +57,43 @@ class WeHabitaRepository(private val db: WeHabitaDatabase) {
             password_hash = passwordHash,
             codigo_usuario = randomCode
         )
-        return userDao.insertUser(user)
+        val localId = userDao.insertUser(user)
+
+        // Try online registration if available
+        bgScope.launch {
+            try {
+                val resp = ApiClient.service.register(
+                    RegisterRequest(
+                        nombre = nombre,
+                        email = email,
+                        username = username,
+                        password = passwordHash
+                    )
+                )
+                if (resp.isSuccessful && resp.body()?.data != null) {
+                    val authData = resp.body()!!.data
+                    ApiClient.setAuthToken(authData.access_token)
+                } else {
+                    // Queue for sync
+                    val json = JSONObject().apply {
+                        put("nombre", nombre)
+                        put("email", email)
+                        put("username", username)
+                        put("password", passwordHash)
+                    }.toString()
+                    restSyncManager.enqueueOfflineAction("auth/register", "POST", json, "REGISTRAR_USUARIO", "Registro de usuario $username")
+                }
+            } catch (e: Exception) {
+                val json = JSONObject().apply {
+                    put("nombre", nombre)
+                    put("email", email)
+                    put("username", username)
+                    put("password", passwordHash)
+                }.toString()
+                restSyncManager.enqueueOfflineAction("auth/register", "POST", json, "REGISTRAR_USUARIO", "Registro de usuario $username")
+            }
+        }
+        return localId
     }
 
     // --- Homes ---
@@ -92,26 +145,65 @@ class WeHabitaRepository(private val db: WeHabitaDatabase) {
             privilegeDao.insertMemberPrivilege(MemberPrivilegeEntity(memberId, priv.id))
         }
 
+        // Online sync
+        bgScope.launch {
+            try {
+                val resp = ApiClient.service.createHome(CreateHomeRequest(nombre = name, tipo_hogar = tipo))
+                if (!resp.isSuccessful) {
+                    val json = JSONObject().apply {
+                        put("nombre", name)
+                        put("tipo_hogar", tipo)
+                    }.toString()
+                    restSyncManager.enqueueOfflineAction("hogares", "POST", json, "CREAR_HOGAR", "Crear hogar $name")
+                }
+            } catch (e: Exception) {
+                val json = JSONObject().apply {
+                    put("nombre", name)
+                    put("tipo_hogar", tipo)
+                }.toString()
+                restSyncManager.enqueueOfflineAction("hogares", "POST", json, "CREAR_HOGAR", "Crear hogar $name")
+            }
+        }
+
         return homeId.toLong()
     }
 
     suspend fun joinHomeByInviteCode(inviteCode: String, userId: Int): Boolean {
-        val home = homeDao.getHomeByInviteCode(inviteCode.trim().uppercase(Locale.getDefault())) ?: return false
-        val existing = homeMemberDao.getMember(home.id, userId)
-        if (existing != null) return true // Already member
+        val cleanCode = inviteCode.trim().uppercase(Locale.getDefault())
+        val home = homeDao.getHomeByInviteCode(cleanCode)
 
-        val memberId = homeMemberDao.insertMember(
-            HomeMemberEntity(
-                hogar_id = home.id,
-                usuario_id = userId,
-                rol = "miembro"
-            )
-        ).toInt()
+        // Try online join first
+        bgScope.launch {
+            try {
+                val resp = ApiClient.service.joinHome(JoinHomeRequest(codigo = cleanCode))
+                if (!resp.isSuccessful) {
+                    val json = JSONObject().apply { put("codigo", cleanCode) }.toString()
+                    restSyncManager.enqueueOfflineAction("invitaciones/unirse", "POST", json, "UNIRSE_HOGAR", "Unirse al hogar con código $cleanCode")
+                }
+            } catch (e: Exception) {
+                val json = JSONObject().apply { put("codigo", cleanCode) }.toString()
+                restSyncManager.enqueueOfflineAction("invitaciones/unirse", "POST", json, "UNIRSE_HOGAR", "Unirse al hogar con código $cleanCode")
+            }
+        }
 
-        val privs = ensureStandardPrivileges()
-        val defaultPrivNames = listOf("marcar_tareas", "crear_problemas", "crear_necesidades")
-        privs.filter { it.nombre in defaultPrivNames }.forEach { priv ->
-            privilegeDao.insertMemberPrivilege(MemberPrivilegeEntity(memberId, priv.id))
+        if (home != null) {
+            val existing = homeMemberDao.getMember(home.id, userId)
+            if (existing != null) return true // Already member
+
+            val memberId = homeMemberDao.insertMember(
+                HomeMemberEntity(
+                    hogar_id = home.id,
+                    usuario_id = userId,
+                    rol = "miembro"
+                )
+            ).toInt()
+
+            val privs = ensureStandardPrivileges()
+            val defaultPrivNames = listOf("marcar_tareas", "crear_problemas", "crear_necesidades")
+            privs.filter { it.nombre in defaultPrivNames }.forEach { priv ->
+                privilegeDao.insertMemberPrivilege(MemberPrivilegeEntity(memberId, priv.id))
+            }
+            return true
         }
         return true
     }
@@ -134,10 +226,63 @@ class WeHabitaRepository(private val db: WeHabitaDatabase) {
 
     suspend fun updateMemberRole(member: HomeMemberEntity, newRole: String) {
         homeMemberDao.updateMember(member.copy(rol = newRole))
+        bgScope.launch {
+            try {
+                val resp = ApiClient.service.updateMemberRole(
+                    homeId = member.hogar_id,
+                    memberId = member.id,
+                    request = UpdateMemberRoleRequest(rol = newRole)
+                )
+                if (!resp.isSuccessful) {
+                    val json = JSONObject().apply { put("rol", newRole) }.toString()
+                    restSyncManager.enqueueOfflineAction(
+                        "hogares/${member.hogar_id}/miembros/${member.id}/rol",
+                        "PUT",
+                        json,
+                        "ACTUALIZAR_ROL",
+                        "Actualizar rol de miembro a $newRole"
+                    )
+                }
+            } catch (e: Exception) {
+                val json = JSONObject().apply { put("rol", newRole) }.toString()
+                restSyncManager.enqueueOfflineAction(
+                    "hogares/${member.hogar_id}/miembros/${member.id}/rol",
+                    "PUT",
+                    json,
+                    "ACTUALIZAR_ROL",
+                    "Actualizar rol de miembro a $newRole"
+                )
+            }
+        }
     }
 
     suspend fun removeMember(homeId: Int, userId: Int) {
+        val member = homeMemberDao.getMember(homeId, userId)
         homeMemberDao.removeMember(homeId, userId)
+        if (member != null) {
+            bgScope.launch {
+                try {
+                    val resp = ApiClient.service.removeMember(homeId, member.id)
+                    if (!resp.isSuccessful) {
+                        restSyncManager.enqueueOfflineAction(
+                            "hogares/$homeId/miembros/${member.id}",
+                            "DELETE",
+                            null,
+                            "ELIMINAR_MIEMBRO",
+                            "Eliminar miembro de hogar"
+                        )
+                    }
+                } catch (e: Exception) {
+                    restSyncManager.enqueueOfflineAction(
+                        "hogares/$homeId/miembros/${member.id}",
+                        "DELETE",
+                        null,
+                        "ELIMINAR_MIEMBRO",
+                        "Eliminar miembro de hogar"
+                    )
+                }
+            }
+        }
     }
 
     // --- Invitations ---
@@ -157,7 +302,45 @@ class WeHabitaRepository(private val db: WeHabitaDatabase) {
             usuario_destino_id = destUser?.id,
             creado_por = createdBy
         )
-        return invitationDao.insertInvitation(invitation)
+        val invId = invitationDao.insertInvitation(invitation)
+
+        bgScope.launch {
+            try {
+                val resp = ApiClient.service.createInvitation(
+                    homeId = homeId,
+                    request = CreateInvitationRequest(
+                        email_destino = email,
+                        codigo_usuario_destino = userCode
+                    )
+                )
+                if (!resp.isSuccessful) {
+                    val json = JSONObject().apply {
+                        put("email_destino", email)
+                        put("codigo_usuario_destino", userCode)
+                    }.toString()
+                    restSyncManager.enqueueOfflineAction(
+                        "hogares/$homeId/invitaciones",
+                        "POST",
+                        json,
+                        "CREAR_INVITACION",
+                        "Crear invitación para $email"
+                    )
+                }
+            } catch (e: Exception) {
+                val json = JSONObject().apply {
+                    put("email_destino", email)
+                    put("codigo_usuario_destino", userCode)
+                }.toString()
+                restSyncManager.enqueueOfflineAction(
+                    "hogares/$homeId/invitaciones",
+                    "POST",
+                    json,
+                    "CREAR_INVITACION",
+                    "Crear invitación para $email"
+                )
+            }
+        }
+        return invId
     }
 
     // --- Tasks & Schedules ---
@@ -177,7 +360,7 @@ class WeHabitaRepository(private val db: WeHabitaDatabase) {
         tipo: String, // 'unica' | 'fija'
         fechaInicio: String,
         fechaFin: String?,
-        horarios: List<Pair<String, String?>>, // List of (hora_inicio, hora_fin)
+        horarios: List<Pair<String, String?>>,
         assignedUserIds: List<Int>
     ): Long {
         val task = TaskEntity(
@@ -216,11 +399,108 @@ class WeHabitaRepository(private val db: WeHabitaDatabase) {
             taskDao.insertAssignment(TaskAssignmentEntity(tarea_id = taskId, usuario_id = userId))
         }
 
+        // Online sync
+        bgScope.launch {
+            try {
+                val schedulesDto = horarios.map { ScheduleDto(hora_inicio = it.first, hora_fin = it.second) }
+                val resp = ApiClient.service.createTask(
+                    homeId = homeId,
+                    request = CreateTaskRequest(
+                        titulo = titulo,
+                        descripcion = descripcion,
+                        tipo = tipo,
+                        fecha_inicio = fechaInicio,
+                        fecha_fin = fechaFin,
+                        horarios = schedulesDto,
+                        asignados_ids = assignedUserIds
+                    )
+                )
+                if (!resp.isSuccessful) {
+                    val json = JSONObject().apply {
+                        put("titulo", titulo)
+                        put("descripcion", descripcion)
+                        put("tipo", tipo)
+                        put("fecha_inicio", fechaInicio)
+                        put("fecha_fin", fechaFin)
+                        val hArr = JSONArray()
+                        for ((hIn, hOut) in horarios) {
+                            val hObj = JSONObject()
+                            hObj.put("hora_inicio", hIn)
+                            if (hOut != null) hObj.put("hora_fin", hOut)
+                            hArr.put(hObj)
+                        }
+                        put("horarios", hArr)
+                        val aArr = JSONArray()
+                        for (uId in assignedUserIds) aArr.put(uId)
+                        put("asignados_ids", aArr)
+                    }.toString()
+                    restSyncManager.enqueueOfflineAction(
+                        "hogares/$homeId/tareas",
+                        "POST",
+                        json,
+                        "CREAR_TAREA",
+                        "Crear tarea $titulo"
+                    )
+                }
+            } catch (e: Exception) {
+                val json = JSONObject().apply {
+                    put("titulo", titulo)
+                    put("descripcion", descripcion)
+                    put("tipo", tipo)
+                    put("fecha_inicio", fechaInicio)
+                    put("fecha_fin", fechaFin)
+                    val hArr = JSONArray()
+                    for ((hIn, hOut) in horarios) {
+                        val hObj = JSONObject()
+                        hObj.put("hora_inicio", hIn)
+                        if (hOut != null) hObj.put("hora_fin", hOut)
+                        hArr.put(hObj)
+                    }
+                    put("horarios", hArr)
+                    val aArr = JSONArray()
+                    for (uId in assignedUserIds) aArr.put(uId)
+                    put("asignados_ids", aArr)
+                }.toString()
+                restSyncManager.enqueueOfflineAction(
+                    "hogares/$homeId/tareas",
+                    "POST",
+                    json,
+                    "CREAR_TAREA",
+                    "Crear tarea $titulo"
+                )
+            }
+        }
+
         return taskId.toLong()
     }
 
     suspend fun deleteTask(taskId: Int) {
+        val task = taskDao.getTaskById(taskId)
         taskDao.deleteTask(taskId)
+        if (task != null) {
+            bgScope.launch {
+                try {
+                    val resp = ApiClient.service.deleteTask(task.hogar_id, taskId)
+                    if (!resp.isSuccessful) {
+                        restSyncManager.enqueueOfflineAction(
+                            "hogares/${task.hogar_id}/tareas/$taskId",
+                            "DELETE",
+                            null,
+                            "ELIMINAR_TAREA",
+                            "Eliminar tarea #${taskId}"
+                        )
+                    }
+                } catch (e: Exception) {
+                    restSyncManager.enqueueOfflineAction(
+                        "hogares/${task.hogar_id}/tareas/$taskId",
+                        "DELETE",
+                        null,
+                        "ELIMINAR_TAREA",
+                        "Eliminar tarea #${taskId}"
+                    )
+                }
+            }
+        }
     }
 
     // --- Occurrences ---
@@ -230,12 +510,6 @@ class WeHabitaRepository(private val db: WeHabitaDatabase) {
     fun getAllOccurrencesForHome(homeId: Int): Flow<List<OccurrenceWithDetails>> =
         taskOccurrenceDao.getAllOccurrencesForHome(homeId)
 
-    suspend fun ensureTodayOccurrences(homeId: Int) {
-        val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
-        val todayStr = dateFormat.format(Date())
-        // Generate today occurrences for active tasks if missing
-    }
-
     suspend fun markOccurrence(occurrenceId: Int, completed: Boolean, userId: Int?, notes: String?) {
         taskOccurrenceDao.markOccurrence(
             occurrenceId = occurrenceId,
@@ -244,6 +518,47 @@ class WeHabitaRepository(private val db: WeHabitaDatabase) {
             completedAt = if (completed) System.currentTimeMillis() else null,
             notes = notes
         )
+
+        // Try sync online
+        bgScope.launch {
+            try {
+                // Find occurrence's home id
+                val taskOcc = taskOccurrenceDao.getAllOccurrencesList().find { it.id == occurrenceId }
+                val task = taskOcc?.let { taskDao.getTaskById(it.tarea_id) }
+                val homeId = task?.hogar_id ?: 1
+
+                val resp = ApiClient.service.completeOccurrence(
+                    homeId = homeId,
+                    occurrenceId = occurrenceId,
+                    request = CompleteOccurrenceRequest(completada = completed, notas = notes)
+                )
+                if (!resp.isSuccessful) {
+                    val json = JSONObject().apply {
+                        put("completada", completed)
+                        if (notes != null) put("notas", notes)
+                    }.toString()
+                    restSyncManager.enqueueOfflineAction(
+                        "hogares/$homeId/tareas-ocurrencias/$occurrenceId/completar",
+                        "PATCH",
+                        json,
+                        "COMPLETAR_OCURRENCIA",
+                        "Marcar ocurrencia #$occurrenceId como ${if (completed) "completada" else "pendiente"}"
+                    )
+                }
+            } catch (e: Exception) {
+                val json = JSONObject().apply {
+                    put("completada", completed)
+                    if (notes != null) put("notas", notes)
+                }.toString()
+                restSyncManager.enqueueOfflineAction(
+                    "hogares/1/tareas-ocurrencias/$occurrenceId/completar",
+                    "PATCH",
+                    json,
+                    "COMPLETAR_OCURRENCIA",
+                    "Marcar ocurrencia #$occurrenceId como ${if (completed) "completada" else "pendiente"}"
+                )
+            }
+        }
     }
 
     // --- Penalties ---
@@ -277,11 +592,94 @@ class WeHabitaRepository(private val db: WeHabitaDatabase) {
         for (uId in assignedUserIds) {
             penaltyDao.insertPenaltyUser(PenaltyUserEntity(penalizacion_id = pId, usuario_id = uId))
         }
+
+        // Online sync
+        bgScope.launch {
+            try {
+                val resp = ApiClient.service.createPenalty(
+                    homeId = homeId,
+                    request = CreatePenaltyRequest(
+                        titulo = titulo,
+                        descripcion_motivo = motivo,
+                        penalizacion = penalizacion,
+                        fecha_inicio = fechaInicio,
+                        fecha_fin = fechaFin,
+                        usuarios_ids = assignedUserIds
+                    )
+                )
+                if (!resp.isSuccessful) {
+                    val json = JSONObject().apply {
+                        put("titulo", titulo)
+                        put("descripcion_motivo", motivo)
+                        put("penalizacion", penalizacion)
+                        put("fecha_inicio", fechaInicio)
+                        put("fecha_fin", fechaFin)
+                        val arr = JSONArray()
+                        for (u in assignedUserIds) arr.put(u)
+                        put("usuarios_ids", arr)
+                    }.toString()
+                    restSyncManager.enqueueOfflineAction(
+                        "hogares/$homeId/penalizaciones",
+                        "POST",
+                        json,
+                        "CREAR_PENALIZACION",
+                        "Crear penalización $titulo"
+                    )
+                }
+            } catch (e: Exception) {
+                val json = JSONObject().apply {
+                    put("titulo", titulo)
+                    put("descripcion_motivo", motivo)
+                    put("penalizacion", penalizacion)
+                    put("fecha_inicio", fechaInicio)
+                    put("fecha_fin", fechaFin)
+                    val arr = JSONArray()
+                    for (u in assignedUserIds) arr.put(u)
+                    put("usuarios_ids", arr)
+                }.toString()
+                restSyncManager.enqueueOfflineAction(
+                    "hogares/$homeId/penalizaciones",
+                    "POST",
+                    json,
+                    "CREAR_PENALIZACION",
+                    "Crear penalización $titulo"
+                )
+            }
+        }
+
         return pId.toLong()
     }
 
     suspend fun updatePenaltyStatus(penalty: PenaltyEntity, newStatus: String) {
         penaltyDao.updatePenalty(penalty.copy(estado = newStatus))
+        bgScope.launch {
+            try {
+                val resp = ApiClient.service.updatePenaltyStatus(
+                    homeId = penalty.hogar_id,
+                    penaltyId = penalty.id,
+                    request = UpdatePenaltyStatusRequest(estado = newStatus)
+                )
+                if (!resp.isSuccessful) {
+                    val json = JSONObject().apply { put("estado", newStatus) }.toString()
+                    restSyncManager.enqueueOfflineAction(
+                        "hogares/${penalty.hogar_id}/penalizaciones/${penalty.id}/estado",
+                        "PATCH",
+                        json,
+                        "ACTUALIZAR_ESTADO_PENALIZACION",
+                        "Cambiar estado de penalización #${penalty.id} a $newStatus"
+                    )
+                }
+            } catch (e: Exception) {
+                val json = JSONObject().apply { put("estado", newStatus) }.toString()
+                restSyncManager.enqueueOfflineAction(
+                    "hogares/${penalty.hogar_id}/penalizaciones/${penalty.id}/estado",
+                    "PATCH",
+                    json,
+                    "ACTUALIZAR_ESTADO_PENALIZACION",
+                    "Cambiar estado de penalización #${penalty.id} a $newStatus"
+                )
+            }
+        }
     }
 
     // --- Problems & Conflicts ---
@@ -313,17 +711,95 @@ class WeHabitaRepository(private val db: WeHabitaDatabase) {
         for (uId in involvedUserIds) {
             problemDao.insertProblemUser(ProblemUserEntity(problema_id = pId, usuario_id = uId))
         }
+
+        // Online sync
+        bgScope.launch {
+            try {
+                val resp = ApiClient.service.createProblem(
+                    homeId = homeId,
+                    request = CreateProblemRequest(
+                        titulo = titulo,
+                        descripcion = descripcion,
+                        usuarios_involucrados_ids = involvedUserIds
+                    )
+                )
+                if (!resp.isSuccessful) {
+                    val json = JSONObject().apply {
+                        put("titulo", titulo)
+                        put("descripcion", descripcion)
+                        val arr = JSONArray()
+                        for (u in involvedUserIds) arr.put(u)
+                        put("usuarios_involucrados_ids", arr)
+                    }.toString()
+                    restSyncManager.enqueueOfflineAction(
+                        "hogares/$homeId/problemas",
+                        "POST",
+                        json,
+                        "CREAR_PROBLEMA",
+                        "Crear problema $titulo"
+                    )
+                }
+            } catch (e: Exception) {
+                val json = JSONObject().apply {
+                    put("titulo", titulo)
+                    put("descripcion", descripcion)
+                    val arr = JSONArray()
+                    for (u in involvedUserIds) arr.put(u)
+                    put("usuarios_involucrados_ids", arr)
+                }.toString()
+                restSyncManager.enqueueOfflineAction(
+                    "hogares/$homeId/problemas",
+                    "POST",
+                    json,
+                    "CREAR_PROBLEMA",
+                    "Crear problema $titulo"
+                )
+            }
+        }
+
         return pId.toLong()
     }
 
     suspend fun addPointOfView(problemId: Int, userId: Int, contenido: String): Long {
-        return problemDao.insertPointOfView(
+        val povId = problemDao.insertPointOfView(
             ProblemPointOfViewEntity(
                 problema_id = problemId,
                 usuario_id = userId,
                 contenido = contenido
             )
         )
+
+        bgScope.launch {
+            try {
+                val prob = problemDao.getProblemById(problemId)
+                val homeId = prob?.hogar_id ?: 1
+                val resp = ApiClient.service.addPointOfView(
+                    homeId = homeId,
+                    problemId = problemId,
+                    request = AddPointOfViewRequest(contenido = contenido)
+                )
+                if (!resp.isSuccessful) {
+                    val json = JSONObject().apply { put("contenido", contenido) }.toString()
+                    restSyncManager.enqueueOfflineAction(
+                        "hogares/$homeId/problemas/$problemId/puntos-vista",
+                        "POST",
+                        json,
+                        "AGREGAR_PUNTO_VISTA",
+                        "Agregar punto de vista al problema #$problemId"
+                    )
+                }
+            } catch (e: Exception) {
+                val json = JSONObject().apply { put("contenido", contenido) }.toString()
+                restSyncManager.enqueueOfflineAction(
+                    "hogares/1/problemas/$problemId/puntos-vista",
+                    "POST",
+                    json,
+                    "AGREGAR_PUNTO_VISTA",
+                    "Agregar punto de vista al problema #$problemId"
+                )
+            }
+        }
+        return povId
     }
 
     suspend fun updateProblemDetails(
@@ -339,6 +815,47 @@ class WeHabitaRepository(private val db: WeHabitaDatabase) {
                 acuerdo = acuerdo
             )
         )
+
+        bgScope.launch {
+            try {
+                val resp = ApiClient.service.updateProblemStatus(
+                    homeId = problem.hogar_id,
+                    problemId = problem.id,
+                    request = UpdateProblemStatusRequest(
+                        hablado = hablado,
+                        solucionado = solucionado,
+                        acuerdo = acuerdo
+                    )
+                )
+                if (!resp.isSuccessful) {
+                    val json = JSONObject().apply {
+                        put("hablado", hablado)
+                        put("solucionado", solucionado)
+                        if (acuerdo != null) put("acuerdo", acuerdo)
+                    }.toString()
+                    restSyncManager.enqueueOfflineAction(
+                        "hogares/${problem.hogar_id}/problemas/${problem.id}/estado",
+                        "PATCH",
+                        json,
+                        "ACTUALIZAR_ESTADO_PROBLEMA",
+                        "Actualizar estado del problema #${problem.id}"
+                    )
+                }
+            } catch (e: Exception) {
+                val json = JSONObject().apply {
+                    put("hablado", hablado)
+                    put("solucionado", solucionado)
+                    if (acuerdo != null) put("acuerdo", acuerdo)
+                }.toString()
+                restSyncManager.enqueueOfflineAction(
+                    "hogares/${problem.hogar_id}/problemas/${problem.id}/estado",
+                    "PATCH",
+                    json,
+                    "ACTUALIZAR_ESTADO_PROBLEMA",
+                    "Actualizar estado del problema #${problem.id}"
+                )
+            }
+        }
     }
 
     // --- Shopping / Needs ---
@@ -349,13 +866,42 @@ class WeHabitaRepository(private val db: WeHabitaDatabase) {
         needListDao.getItemsForList(listId)
 
     suspend fun createNeedList(homeId: Int, createdBy: Int, titulo: String): Long {
-        return needListDao.insertList(
+        val listId = needListDao.insertList(
             NeedListEntity(
                 hogar_id = homeId,
                 creado_por = createdBy,
                 titulo = titulo
             )
         )
+
+        bgScope.launch {
+            try {
+                val resp = ApiClient.service.createNeedList(
+                    homeId = homeId,
+                    request = CreateNeedListRequest(titulo = titulo)
+                )
+                if (!resp.isSuccessful) {
+                    val json = JSONObject().apply { put("titulo", titulo) }.toString()
+                    restSyncManager.enqueueOfflineAction(
+                        "hogares/$homeId/necesidades",
+                        "POST",
+                        json,
+                        "CREAR_LISTA_COMPRAS",
+                        "Crear lista de compras $titulo"
+                    )
+                }
+            } catch (e: Exception) {
+                val json = JSONObject().apply { put("titulo", titulo) }.toString()
+                restSyncManager.enqueueOfflineAction(
+                    "hogares/$homeId/necesidades",
+                    "POST",
+                    json,
+                    "CREAR_LISTA_COMPRAS",
+                    "Crear lista de compras $titulo"
+                )
+            }
+        }
+        return listId
     }
 
     suspend fun addNeedItem(
@@ -366,7 +912,7 @@ class WeHabitaRepository(private val db: WeHabitaDatabase) {
         compradorId: Int?,
         notas: String?
     ): Long {
-        return needListDao.insertItem(
+        val itemId = needListDao.insertItem(
             NeedItemEntity(
                 lista_id = listaId,
                 producto_nombre = nombre,
@@ -377,14 +923,116 @@ class WeHabitaRepository(private val db: WeHabitaDatabase) {
                 notas = notas
             )
         )
+
+        bgScope.launch {
+            try {
+                val list = needListDao.getAllNeedListsList().find { it.id == listaId }
+                val homeId = list?.hogar_id ?: 1
+                val resp = ApiClient.service.addNeedItem(
+                    homeId = homeId,
+                    listId = listaId,
+                    request = CreateNeedItemRequest(
+                        producto_nombre = nombre,
+                        cantidad = cantidad,
+                        fecha_necesaria = fechaNecesaria,
+                        comprador_id = compradorId,
+                        notas = notas
+                    )
+                )
+                if (!resp.isSuccessful) {
+                    val json = JSONObject().apply {
+                        put("producto_nombre", nombre)
+                        put("cantidad", cantidad)
+                        put("fecha_necesaria", fechaNecesaria)
+                        if (compradorId != null) put("comprador_id", compradorId)
+                        if (notas != null) put("notas", notas)
+                    }.toString()
+                    restSyncManager.enqueueOfflineAction(
+                        "hogares/$homeId/necesidades/$listaId/items",
+                        "POST",
+                        json,
+                        "AGREGAR_ITEM_COMPRA",
+                        "Agregar item $nombre a la lista"
+                    )
+                }
+            } catch (e: Exception) {
+                val json = JSONObject().apply {
+                    put("producto_nombre", nombre)
+                    put("cantidad", cantidad)
+                    put("fecha_necesaria", fechaNecesaria)
+                    if (compradorId != null) put("comprador_id", compradorId)
+                    if (notas != null) put("notas", notas)
+                }.toString()
+                restSyncManager.enqueueOfflineAction(
+                    "hogares/1/necesidades/$listaId/items",
+                    "POST",
+                    json,
+                    "AGREGAR_ITEM_COMPRA",
+                    "Agregar item $nombre a la lista"
+                )
+            }
+        }
+        return itemId
     }
 
     suspend fun updateNeedItemStatus(item: NeedItemEntity, newStatus: String) {
         needListDao.updateItem(item.copy(estado = newStatus))
+        bgScope.launch {
+            try {
+                val list = needListDao.getAllNeedListsList().find { it.id == item.lista_id }
+                val homeId = list?.hogar_id ?: 1
+                val resp = ApiClient.service.updateNeedItemStatus(
+                    homeId = homeId,
+                    itemId = item.id,
+                    request = UpdateItemStatusRequest(estado = newStatus)
+                )
+                if (!resp.isSuccessful) {
+                    val json = JSONObject().apply { put("estado", newStatus) }.toString()
+                    restSyncManager.enqueueOfflineAction(
+                        "hogares/$homeId/necesidades/items/${item.id}/estado",
+                        "PATCH",
+                        json,
+                        "ACTUALIZAR_ESTADO_ITEM",
+                        "Actualizar estado del item #${item.id} a $newStatus"
+                    )
+                }
+            } catch (e: Exception) {
+                val json = JSONObject().apply { put("estado", newStatus) }.toString()
+                restSyncManager.enqueueOfflineAction(
+                    "hogares/1/necesidades/items/${item.id}/estado",
+                    "PATCH",
+                    json,
+                    "ACTUALIZAR_ESTADO_ITEM",
+                    "Actualizar estado del item #${item.id} a $newStatus"
+                )
+            }
+        }
     }
 
     suspend fun deleteNeedItem(itemId: Int) {
         needListDao.deleteItem(itemId)
+        bgScope.launch {
+            try {
+                val resp = ApiClient.service.deleteNeedItem(homeId = 1, itemId = itemId)
+                if (!resp.isSuccessful) {
+                    restSyncManager.enqueueOfflineAction(
+                        "hogares/1/necesidades/items/$itemId",
+                        "DELETE",
+                        null,
+                        "ELIMINAR_ITEM_COMPRA",
+                        "Eliminar item de compra #$itemId"
+                    )
+                }
+            } catch (e: Exception) {
+                restSyncManager.enqueueOfflineAction(
+                    "hogares/1/necesidades/items/$itemId",
+                    "DELETE",
+                    null,
+                    "ELIMINAR_ITEM_COMPRA",
+                    "Eliminar item de compra #$itemId"
+                )
+            }
+        }
     }
 
     // --- Goals & Compound Missions ---
@@ -397,9 +1045,9 @@ class WeHabitaRepository(private val db: WeHabitaDatabase) {
         createdBy: Int,
         titulo: String,
         descripcion: String?,
-        tipo: String, // 'simple' | 'compuesto'
+        tipo: String,
         fechaLimiteOriginal: String,
-        puntos: List<Pair<String, Int?>> // (title, assignedUserId)
+        puntos: List<Pair<String, Int?>>
     ): Long {
         val goal = GoalEntity(
             hogar_id = homeId,
@@ -424,12 +1072,94 @@ class WeHabitaRepository(private val db: WeHabitaDatabase) {
             )
         }
 
+        // Online sync
+        bgScope.launch {
+            try {
+                val ptDtos = puntos.mapIndexed { idx, (t, a) -> GoalPointInputDto(titulo = t, asignado_a = a, orden = idx) }
+                val resp = ApiClient.service.createGoal(
+                    homeId = homeId,
+                    request = CreateGoalRequest(
+                        titulo = titulo,
+                        descripcion = descripcion,
+                        tipo = tipo,
+                        fecha_limite = fechaLimiteOriginal,
+                        puntos = ptDtos
+                    )
+                )
+                if (!resp.isSuccessful) {
+                    val json = JSONObject().apply {
+                        put("titulo", titulo)
+                        put("descripcion", descripcion)
+                        put("tipo", tipo)
+                        put("fecha_limite", fechaLimiteOriginal)
+                        val pArr = JSONArray()
+                        for (p in ptDtos) {
+                            val pObj = JSONObject()
+                            pObj.put("titulo", p.titulo)
+                            if (p.asignado_a != null) pObj.put("asignado_a", p.asignado_a)
+                            pObj.put("orden", p.orden)
+                            pArr.put(pObj)
+                        }
+                        put("puntos", pArr)
+                    }.toString()
+                    restSyncManager.enqueueOfflineAction(
+                        "hogares/$homeId/objetivos",
+                        "POST",
+                        json,
+                        "CREAR_OBJETIVO",
+                        "Crear objetivo $titulo"
+                    )
+                }
+            } catch (e: Exception) {
+                val json = JSONObject().apply {
+                    put("titulo", titulo)
+                    put("descripcion", descripcion)
+                    put("tipo", tipo)
+                    put("fecha_limite", fechaLimiteOriginal)
+                }.toString()
+                restSyncManager.enqueueOfflineAction(
+                    "hogares/$homeId/objetivos",
+                    "POST",
+                    json,
+                    "CREAR_OBJETIVO",
+                    "Crear objetivo $titulo"
+                )
+            }
+        }
+
         return goalId.toLong()
     }
 
     suspend fun postponeGoal(goal: GoalEntity, newDeadline: String) {
-        // Keeps original deadline intact, updates actual deadline
         goalDao.updateGoal(goal.copy(fecha_limite_actual = newDeadline))
+        bgScope.launch {
+            try {
+                val resp = ApiClient.service.postponeGoal(
+                    homeId = goal.hogar_id,
+                    goalId = goal.id,
+                    request = PostponeGoalRequest(nueva_fecha_limite = newDeadline)
+                )
+                if (!resp.isSuccessful) {
+                    val json = JSONObject().apply { put("nueva_fecha_limite", newDeadline) }.toString()
+                    restSyncManager.enqueueOfflineAction(
+                        "hogares/${goal.hogar_id}/objetivos/${goal.id}/aplazar",
+                        "PATCH",
+                        json,
+                        "APLAZAR_OBJETIVO",
+                        "Aplazar fecha límite del objetivo #${goal.id} a $newDeadline"
+                    )
+                }
+            } catch (e: Exception) {
+                val json = JSONObject().apply { put("nueva_fecha_limite", newDeadline) }.toString()
+                restSyncManager.enqueueOfflineAction(
+                    "hogares/${goal.hogar_id}/objetivos/${goal.id}/aplazar",
+                    "PATCH",
+                    json,
+                    "APLAZAR_OBJETIVO",
+                    "Aplazar fecha límite del objetivo #${goal.id} a $newDeadline"
+                )
+            }
+        }
     }
 
     suspend fun setGoalCompleted(goal: GoalEntity, completed: Boolean) {
@@ -439,6 +1169,34 @@ class WeHabitaRepository(private val db: WeHabitaDatabase) {
                 fecha_completado = if (completed) System.currentTimeMillis() else null
             )
         )
+        bgScope.launch {
+            try {
+                val resp = ApiClient.service.completeGoal(
+                    homeId = goal.hogar_id,
+                    goalId = goal.id,
+                    request = CompleteGoalRequest(completado = completed)
+                )
+                if (!resp.isSuccessful) {
+                    val json = JSONObject().apply { put("completado", completed) }.toString()
+                    restSyncManager.enqueueOfflineAction(
+                        "hogares/${goal.hogar_id}/objetivos/${goal.id}/completar",
+                        "PATCH",
+                        json,
+                        "COMPLETAR_OBJETIVO",
+                        "Marcar objetivo #${goal.id} como ${if (completed) "completado" else "pendiente"}"
+                    )
+                }
+            } catch (e: Exception) {
+                val json = JSONObject().apply { put("completado", completed) }.toString()
+                restSyncManager.enqueueOfflineAction(
+                    "hogares/${goal.hogar_id}/objetivos/${goal.id}/completar",
+                    "PATCH",
+                    json,
+                    "COMPLETAR_OBJETIVO",
+                    "Marcar objetivo #${goal.id} como ${if (completed) "completado" else "pendiente"}"
+                )
+            }
+        }
     }
 
     suspend fun toggleGoalPoint(point: GoalPointEntity, completed: Boolean, userId: Int?) {
@@ -449,5 +1207,35 @@ class WeHabitaRepository(private val db: WeHabitaDatabase) {
                 completado_por = if (completed) userId else null
             )
         )
+        bgScope.launch {
+            try {
+                val goal = goalDao.getGoalById(point.objetivo_id)
+                val homeId = goal?.hogar_id ?: 1
+                val resp = ApiClient.service.completeGoalPoint(
+                    homeId = homeId,
+                    pointId = point.id,
+                    request = CompleteGoalRequest(completado = completed)
+                )
+                if (!resp.isSuccessful) {
+                    val json = JSONObject().apply { put("completado", completed) }.toString()
+                    restSyncManager.enqueueOfflineAction(
+                        "hogares/$homeId/objetivos/puntos/${point.id}/completar",
+                        "PATCH",
+                        json,
+                        "COMPLETAR_PUNTO_OBJETIVO",
+                        "Marcar paso #${point.id} de objetivo como ${if (completed) "completado" else "pendiente"}"
+                    )
+                }
+            } catch (e: Exception) {
+                val json = JSONObject().apply { put("completado", completed) }.toString()
+                restSyncManager.enqueueOfflineAction(
+                    "hogares/1/objetivos/puntos/${point.id}/completar",
+                    "PATCH",
+                    json,
+                    "COMPLETAR_PUNTO_OBJETIVO",
+                    "Marcar paso #${point.id} de objetivo como ${if (completed) "completado" else "pendiente"}"
+                )
+            }
+        }
     }
 }
