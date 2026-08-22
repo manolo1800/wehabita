@@ -33,16 +33,17 @@ interface UserDao {
 
 @Dao
 interface HomeDao {
-    @Query("SELECT * FROM hogares ORDER BY fecha_creacion DESC")
+    @Query("SELECT * FROM hogares WHERE TRIM(nombre) != '' ORDER BY fecha_creacion DESC")
     fun getAllHomes(): Flow<List<HomeEntity>>
 
-    @Query("SELECT * FROM hogares")
+    @Query("SELECT * FROM hogares WHERE TRIM(nombre) != ''")
     suspend fun getAllHomesList(): List<HomeEntity>
 
     @Query("""
-        SELECT h.* FROM hogares h
-        INNER JOIN miembros_hogar m ON h.id = m.hogar_id
-        WHERE m.usuario_id = :userId AND m.activo = 1
+        SELECT DISTINCT h.* FROM hogares h
+        LEFT JOIN miembros_hogar m ON h.id = m.hogar_id
+        WHERE ((m.usuario_id = :userId AND m.activo = 1) OR h.creado_por = :userId)
+          AND TRIM(h.nombre) != ''
         ORDER BY h.fecha_creacion DESC
     """)
     fun getHomesForUser(userId: Int): Flow<List<HomeEntity>>
@@ -61,6 +62,9 @@ interface HomeDao {
 
     @Update
     suspend fun updateHome(home: HomeEntity)
+
+    @Query("DELETE FROM hogares WHERE id = :homeId OR TRIM(nombre) = ''")
+    suspend fun deleteHome(homeId: Int)
 }
 
 data class MemberWithUser(
@@ -219,12 +223,12 @@ data class OccurrenceWithDetails(
         parentColumn = "tarea_id",
         entityColumn = "id"
     )
-    val task: TaskEntity,
+    val task: TaskEntity? = null,
     @Relation(
         parentColumn = "completada_por",
         entityColumn = "id"
     )
-    val completedByUser: UserEntity?
+    val completedByUser: UserEntity? = null
 )
 
 @Dao
@@ -253,7 +257,7 @@ interface TaskOccurrenceDao {
     @Query("SELECT * FROM tarea_ocurrencias WHERE tarea_id = :taskId AND fecha = :date AND hora_inicio = :time LIMIT 1")
     suspend fun getOccurrence(taskId: Int, date: String, time: String): TaskOccurrenceEntity?
 
-    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertOccurrence(occurrence: TaskOccurrenceEntity): Long
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -268,6 +272,14 @@ interface TaskOccurrenceDao {
         WHERE id = :occurrenceId
     """)
     suspend fun markOccurrence(occurrenceId: Int, completed: Boolean, completedBy: Int?, completedAt: Long?, notes: String?)
+    @Query("SELECT * FROM tarea_ocurrencias WHERE tarea_id = :taskId")
+    suspend fun getOccurrencesForTask(taskId: Int): List<TaskOccurrenceEntity>
+
+    @Query("DELETE FROM tarea_ocurrencias WHERE id = :occurrenceId")
+    suspend fun deleteOccurrence(occurrenceId: Int)
+
+    @Query("DELETE FROM tarea_ocurrencias WHERE tarea_id = :taskId")
+    suspend fun deleteOccurrencesForTask(taskId: Int)
 }
 
 @Dao
@@ -289,6 +301,9 @@ interface PenaltyDao {
 
     @Update
     suspend fun updatePenalty(penalty: PenaltyEntity)
+
+    @Query("DELETE FROM penalizaciones WHERE id = :penaltyId")
+    suspend fun deletePenalty(penaltyId: Int)
 
     @Query("SELECT usuario_id FROM penalizacion_usuarios WHERE penalizacion_id = :penaltyId")
     fun getAssignedUserIds(penaltyId: Int): Flow<List<Int>>
@@ -329,6 +344,9 @@ interface ProblemDao {
     @Update
     suspend fun updateProblem(problem: ProblemEntity)
 
+    @Query("DELETE FROM problemas WHERE id = :problemId")
+    suspend fun deleteProblem(problemId: Int)
+
     @Query("SELECT usuario_id FROM problema_usuarios WHERE problema_id = :problemId")
     fun getInvolvedUserIds(problemId: Int): Flow<List<Int>>
 
@@ -355,6 +373,9 @@ interface ProblemDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertPointsOfView(povs: List<ProblemPointOfViewEntity>)
+
+    @Query("DELETE FROM problema_puntos_vista WHERE id = :povId")
+    suspend fun deletePointOfView(povId: Int)
 }
 
 @Dao
@@ -438,6 +459,9 @@ interface GoalDao {
 
     @Query("DELETE FROM objetivo_puntos WHERE id = :pointId")
     suspend fun deleteGoalPoint(pointId: Int)
+
+    @Query("DELETE FROM objetivo_puntos WHERE objetivo_id = :goalId")
+    suspend fun deletePointsForGoal(goalId: Int)
 }
 
 @Dao
@@ -466,4 +490,3 @@ interface SyncQueueDao {
     @Query("DELETE FROM cola_sincronizacion")
     suspend fun clearAll()
 }
-

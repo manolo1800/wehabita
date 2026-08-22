@@ -9,7 +9,6 @@ import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONObject
 import java.net.InetAddress
 import java.net.Socket
 import java.net.URL
@@ -39,7 +38,7 @@ class RestSyncManager(private val db: WeHabitaDatabase) {
     suspend fun testApiConnection(customUrl: String? = null): Pair<Boolean, String> = withContext(Dispatchers.IO) {
         val targetUrl = customUrl ?: ApiClient.getBaseUrl()
         SyncLogCollector.i(TAG, "=== Iniciando prueba de diagnóstico REST API ===")
-        SyncLogCollector.i(TAG, "Base URL configurada: $targetUrl")
+        SyncLogCollector.i(TAG, "Base URL: $targetUrl")
 
         try {
             val url = URL(if (targetUrl.endsWith("/")) targetUrl else "$targetUrl/")
@@ -102,7 +101,7 @@ class RestSyncManager(private val db: WeHabitaDatabase) {
                 fecha_creacion = System.currentTimeMillis()
             )
             syncQueueDao.enqueue(entity)
-            SyncLogCollector.i(TAG, "[Offline Queue] Acción encolada para sincronización: $descripcion ($accion)")
+            SyncLogCollector.i(TAG, "[Offline Queue] Acción encolada: $descripcion ($accion)")
         } catch (e: Exception) {
             SyncLogCollector.e(TAG, "Error al encolar acción offline: ${e.message}", e)
         }
@@ -153,7 +152,7 @@ class RestSyncManager(private val db: WeHabitaDatabase) {
                     SyncLogCollector.s(TAG, "Sincronizado: ${item.descripcion}")
                 } else {
                     val errBody = response.body?.string() ?: ""
-                    SyncLogCollector.w(TAG, "Error ${response.code} sincronizando ${item.descripcion}: $errBody")
+                    SyncLogCollector.w(TAG, "Error HTTP ${response.code} sincronizando ${item.descripcion}: $errBody")
                     syncQueueDao.updateItem(
                         item.copy(
                             intentos = item.intentos + 1,
@@ -169,7 +168,7 @@ class RestSyncManager(private val db: WeHabitaDatabase) {
                         ultimo_error = e.localizedMessage
                     )
                 )
-                // Stop queue loop if connection failed completely
+                // Stop queue processing on network drop
                 break
             }
         }
@@ -177,288 +176,598 @@ class RestSyncManager(private val db: WeHabitaDatabase) {
         return@withContext successful
     }
 
+    private fun fetchRawJsonArray(endpoint: String): org.json.JSONArray? {
+        return try {
+            val client = ApiClient.getOkHttpClient()
+            val baseUrl = ApiClient.getBaseUrl()
+            val url = if (endpoint.startsWith("http")) endpoint else baseUrl + endpoint.removePrefix("/")
+            val req = okhttp3.Request.Builder()
+                .url(url)
+                .header("Accept", "application/json")
+                .build()
+            val resp = client.newCall(req).execute()
+            if (!resp.isSuccessful) {
+                SyncLogCollector.d(TAG, "Raw GET $endpoint responded HTTP ${resp.code}")
+                return null
+            }
+            val bodyStr = resp.body?.string()?.trim() ?: return null
+            if (bodyStr.startsWith("[")) {
+                org.json.JSONArray(bodyStr)
+            } else if (bodyStr.startsWith("{")) {
+                val obj = org.json.JSONObject(bodyStr)
+                when {
+                    obj.has("data") && obj.optJSONArray("data") != null -> obj.getJSONArray("data")
+                    obj.has("items") && obj.optJSONArray("items") != null -> obj.getJSONArray("items")
+                    obj.has("tareas") && obj.optJSONArray("tareas") != null -> obj.getJSONArray("tareas")
+                    obj.has("problemas") && obj.optJSONArray("problemas") != null -> obj.getJSONArray("problemas")
+                    else -> null
+                }
+            } else null
+        } catch (e: Exception) {
+            SyncLogCollector.w(TAG, "Excepción consultando raw JSON $endpoint: ${e.message}")
+            null
+        }
+    }
+
     /**
      * Pulls latest data from the server for the user and active home,
      * updating local Room SQLite database for offline consistency.
      */
     suspend fun syncWithServer(activeHomeId: Int?): Pair<Boolean, String> = withContext(Dispatchers.IO) {
-        SyncLogCollector.i(TAG, "=== Iniciando sincronización con el servidor REST ===")
+        val token = ApiClient.getAuthToken()
+        SyncLogCollector.i(TAG, "=== Iniciando sincronización REST (Token presente: ${!token.isNullOrBlank()}) ===")
         
         // 1. Process any pending offline mutations first
-        val flushed = processPendingQueue()
+        processPendingQueue()
         
         // 2. If no token, test connectivity
-        val token = ApiClient.getAuthToken()
         if (token.isNullOrBlank()) {
             val (connOk, connMsg) = testApiConnection()
             if (!connOk) {
                 return@withContext Pair(false, connMsg)
             }
-            return@withContext Pair(true, "Conexión activa con el servidor. Inicia sesión para sincronizar tu hogar.")
+            return@withContext Pair(true, "Conexión activa con el servidor. Inicia sesión para sincronizar tus hogares.")
         }
 
         try {
-            // 3. Pull Current User Profile & Homes
-            SyncLogCollector.d(TAG, "Obteniendo perfil del usuario y membresías...")
-            val meResp = ApiClient.service.getMe()
-            if (meResp.isSuccessful && meResp.body()?.data != null) {
-                val profile = meResp.body()!!.data
-                userDao.insertUser(
-                    UserEntity(
-                        id = profile.id,
-                        nombre = profile.nombre,
-                        email = profile.email,
-                        username = profile.username,
-                        password_hash = "",
-                        codigo_usuario = profile.codigo_usuario,
-                        rol_global = profile.rol_global,
-                        activo = profile.activo
-                    )
-                )
+            var targetHomeId = activeHomeId ?: ApiClient.getSavedHomeId()
 
-                // Sync User's Homes
-                for (h in profile.hogares) {
-                    homeDao.insertHome(
-                        HomeEntity(
-                            id = h.hogar_id,
-                            nombre = h.hogar_nombre,
-                            tipo_hogar = h.tipo_hogar,
-                            codigo_invitacion = h.codigo_invitacion,
-                            creado_por = profile.id
+            // 3. Pull Current User Profile & Memberships
+            SyncLogCollector.d(TAG, "Obteniendo perfil del usuario (GET /api/auth/me)...")
+            var currentUserId = ApiClient.getSavedUserId()
+            try {
+                val meResp = ApiClient.service.getMe()
+                if (meResp.isSuccessful && meResp.body()?.data != null) {
+                    val profile = meResp.body()!!.data
+                    currentUserId = profile.id
+                    ApiClient.saveUserId(profile.id)
+
+                    val existingLocalUser = userDao.getUserById(profile.id)
+                    val passHash = existingLocalUser?.password_hash ?: ""
+
+                    userDao.insertUser(
+                        UserEntity(
+                            id = profile.id,
+                            nombre = profile.nombre,
+                            email = profile.email,
+                            username = profile.username,
+                            password_hash = passHash,
+                            codigo_usuario = profile.codigo_usuario,
+                            rol_global = profile.rol_global,
+                            activo = profile.activo
                         )
                     )
-                    homeMemberDao.insertMember(
-                        HomeMemberEntity(
-                            id = h.miembro_id,
-                            hogar_id = h.hogar_id,
-                            usuario_id = profile.id,
-                            rol = h.rol,
-                            activo = true
-                        )
-                    )
+
+                    // Sync User's Homes from Profile
+                    for (h in profile.hogares) {
+                        if (h.hogar_nombre.isNotBlank() && h.hogar_id > 0) {
+                            homeDao.insertHome(
+                                HomeEntity(
+                                    id = h.hogar_id,
+                                    nombre = h.hogar_nombre,
+                                    tipo_hogar = h.tipo_hogar,
+                                    codigo_invitacion = h.codigo_invitacion,
+                                    creado_por = profile.id
+                                )
+                            )
+                            homeMemberDao.insertMember(
+                                HomeMemberEntity(
+                                    id = h.miembro_id,
+                                    hogar_id = h.hogar_id,
+                                    usuario_id = profile.id,
+                                    rol = h.rol,
+                                    activo = true
+                                )
+                            )
+                        }
+                    }
+
+                    if ((targetHomeId == null || targetHomeId <= 0) && profile.hogares.isNotEmpty()) {
+                        targetHomeId = profile.hogares.first().hogar_id
+                        ApiClient.saveHomeId(targetHomeId)
+                    }
+
+                    SyncLogCollector.s(TAG, "Perfil de ${profile.nombre} sincronizado (${profile.hogares.size} hogares en perfil).")
+                } else {
+                    SyncLogCollector.w(TAG, "GET /api/auth/me respondió ${meResp.code()}: ${meResp.errorBody()?.string()}")
+                }
+            } catch (e: Exception) {
+                SyncLogCollector.w(TAG, "Error consultando GET /api/auth/me: ${e.message}")
+            }
+
+            // 3b. Pull Homes from GET /api/hogares (MyHomes)
+            try {
+                val myHomesResp = ApiClient.service.getMyHomes()
+                if (myHomesResp.isSuccessful && myHomesResp.body()?.data != null) {
+                    val homes = myHomesResp.body()!!.data
+                    for (h in homes) {
+                        if (h.hogar_nombre.isNotBlank() && h.hogar_id > 0) {
+                            homeDao.insertHome(
+                                HomeEntity(
+                                    id = h.hogar_id,
+                                    nombre = h.hogar_nombre,
+                                    tipo_hogar = h.tipo_hogar,
+                                    codigo_invitacion = h.codigo_invitacion,
+                                    creado_por = currentUserId ?: 1
+                                )
+                            )
+                            homeMemberDao.insertMember(
+                                HomeMemberEntity(
+                                    id = h.miembro_id,
+                                    hogar_id = h.hogar_id,
+                                    usuario_id = currentUserId ?: 1,
+                                    rol = h.rol,
+                                    activo = true
+                                )
+                            )
+                        }
+                    }
+                    if ((targetHomeId == null || targetHomeId <= 0) && homes.isNotEmpty()) {
+                        targetHomeId = homes.first().hogar_id
+                        ApiClient.saveHomeId(targetHomeId)
+                    }
+                    SyncLogCollector.s(TAG, "Hogares obtenidos de GET /api/hogares: ${homes.size} encontrados.")
+                }
+            } catch (e: Exception) {
+                SyncLogCollector.d(TAG, "No se pudo consultar GET /api/hogares directamente: ${e.message}")
+            }
+
+            // Fallback: Check if targetHomeId is still null, look up in homeDao
+            if (targetHomeId == null || targetHomeId <= 0) {
+                val localHomes = homeDao.getAllHomesList()
+                if (localHomes.isNotEmpty()) {
+                    targetHomeId = localHomes.first().id
+                    ApiClient.saveHomeId(targetHomeId)
                 }
             }
 
             // 4. If active home is selected, pull all its entities
-            if (activeHomeId != null && activeHomeId > 0) {
-                SyncLogCollector.d(TAG, "Sincronizando entidades del hogar activo #$activeHomeId...")
+            if (targetHomeId != null && targetHomeId > 0) {
+                SyncLogCollector.d(TAG, "Sincronizando entidades del hogar activo #$targetHomeId...")
+                val todayStr = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
 
                 // A. Members
-                val membersResp = ApiClient.service.getHomeMembers(activeHomeId)
-                if (membersResp.isSuccessful && membersResp.body()?.data != null) {
-                    val members = membersResp.body()!!.data
-                    for (m in members) {
-                        userDao.insertUser(
-                            UserEntity(
-                                id = m.usuario_id,
-                                nombre = m.nombre,
-                                email = m.email,
-                                username = m.username,
-                                password_hash = "",
-                                codigo_usuario = m.codigo_usuario,
-                                activo = true
+                try {
+                    val membersResp = ApiClient.service.getHomeMembers(targetHomeId)
+                    if (membersResp.isSuccessful && membersResp.body()?.data != null) {
+                        val members = membersResp.body()!!.data
+                        for (m in members) {
+                            val exist = userDao.getUserById(m.usuario_id)
+                            userDao.insertUser(
+                                UserEntity(
+                                    id = m.usuario_id,
+                                    nombre = m.nombre,
+                                    email = m.email,
+                                    username = m.username,
+                                    password_hash = exist?.password_hash ?: "",
+                                    codigo_usuario = m.codigo_usuario,
+                                    activo = true
+                                )
                             )
-                        )
-                        homeMemberDao.insertMember(
-                            HomeMemberEntity(
-                                id = m.id,
-                                hogar_id = activeHomeId,
-                                usuario_id = m.usuario_id,
-                                rol = m.rol,
-                                activo = true
+                            homeMemberDao.insertMember(
+                                HomeMemberEntity(
+                                    id = m.id,
+                                    hogar_id = targetHomeId,
+                                    usuario_id = m.usuario_id,
+                                    rol = m.rol,
+                                    activo = true
+                                )
                             )
-                        )
+                        }
+                        SyncLogCollector.d(TAG, "Miembros sincronizados: ${members.size}")
                     }
+                } catch (e: Exception) {
+                    SyncLogCollector.w(TAG, "Error sincronizando miembros del hogar: ${e.message}")
                 }
 
-                // B. Tasks & Occurrences
-                val tasksResp = ApiClient.service.getTasks(activeHomeId)
-                if (tasksResp.isSuccessful && tasksResp.body()?.data != null) {
-                    val tasks = tasksResp.body()!!.data
-                    for (t in tasks) {
-                        taskDao.insertTask(
-                            TaskEntity(
-                                id = t.id,
-                                hogar_id = t.hogar_id,
-                                creado_por = t.creador?.id ?: 1,
-                                titulo = t.titulo,
-                                descripcion = t.descripcion,
-                                tipo = t.tipo,
-                                fecha_inicio = t.fecha_inicio,
-                                fecha_fin = t.fecha_fin,
-                                activa = t.activa
-                            )
-                        )
-                        for (s in t.horarios) {
-                            taskDao.insertSchedule(
-                                TaskScheduleEntity(
-                                    id = s.id ?: 0,
-                                    tarea_id = t.id,
-                                    hora_inicio = s.hora_inicio,
-                                    hora_fin = s.hora_fin
+                // B. Tasks & Occurrences (with Raw Fallback)
+                var tasksCount = 0
+                try {
+                    val tasksResp = ApiClient.service.getTasks(targetHomeId)
+                    if (tasksResp.isSuccessful && tasksResp.body()?.data != null) {
+                        val tasks = tasksResp.body()!!.data
+                        tasksCount = tasks.size
+                        for (t in tasks) {
+                            taskDao.insertTask(
+                                TaskEntity(
+                                    id = t.id,
+                                    hogar_id = targetHomeId,
+                                    creado_por = t.creado_por ?: t.creador?.id ?: currentUserId ?: 1,
+                                    titulo = t.titulo,
+                                    descripcion = t.descripcion,
+                                    tipo = t.tipo,
+                                    fecha_inicio = t.fecha_inicio.ifBlank { todayStr },
+                                    fecha_fin = t.fecha_fin,
+                                    activa = t.activa
                                 )
                             )
-                        }
-                        for (a in t.asignados) {
-                            taskDao.insertAssignment(
-                                TaskAssignmentEntity(
-                                    tarea_id = t.id,
-                                    usuario_id = a.id
+                            for (s in t.horarios) {
+                                taskDao.insertSchedule(
+                                    TaskScheduleEntity(
+                                        id = s.id ?: 0,
+                                        tarea_id = t.id,
+                                        hora_inicio = s.hora_inicio,
+                                        hora_fin = s.hora_fin
+                                    )
                                 )
-                            )
+                            }
+                            for (a in t.asignados) {
+                                taskDao.insertAssignment(
+                                    TaskAssignmentEntity(
+                                        tarea_id = t.id,
+                                        usuario_id = a.id
+                                    )
+                                )
+                            }
                         }
+                        SyncLogCollector.d(TAG, "Tareas sincronizadas vía Retrofit: $tasksCount")
+                    }
+                } catch (e: Exception) {
+                    SyncLogCollector.w(TAG, "Error sincronizando tareas vía Retrofit: ${e.message}")
+                }
+
+                // Fallback direct raw JSON for tasks if needed
+                if (tasksCount == 0) {
+                    val rawTasks = fetchRawJsonArray("hogares/$targetHomeId/tareas")
+                    if (rawTasks != null) {
+                        for (i in 0 until rawTasks.length()) {
+                            val obj = rawTasks.optJSONObject(i) ?: continue
+                            val tId = obj.optInt("id", 0)
+                            val tTitulo = obj.optString("titulo", "")
+                            if (tId > 0 && tTitulo.isNotBlank()) {
+                                taskDao.insertTask(
+                                    TaskEntity(
+                                        id = tId,
+                                        hogar_id = targetHomeId,
+                                        creado_por = obj.optInt("creado_por", currentUserId ?: 1),
+                                        titulo = tTitulo,
+                                        descripcion = if (obj.isNull("descripcion")) null else obj.optString("descripcion"),
+                                        tipo = obj.optString("tipo", "unica"),
+                                        fecha_inicio = obj.optString("fecha_inicio", todayStr),
+                                        fecha_fin = if (obj.isNull("fecha_fin")) null else obj.optString("fecha_fin"),
+                                        activa = obj.optBoolean("activa", true)
+                                    )
+                                )
+                                tasksCount++
+                            }
+                        }
+                        SyncLogCollector.s(TAG, "Tareas sincronizadas vía Raw JSON: $tasksCount")
                     }
                 }
 
                 // Task Occurrences
-                val occResp = ApiClient.service.getTaskOccurrences(activeHomeId)
-                if (occResp.isSuccessful && occResp.body()?.data != null) {
-                    val occs = occResp.body()!!.data
-                    for (o in occs) {
+                var occsCount = 0
+                try {
+                    val occResp = ApiClient.service.getTaskOccurrences(targetHomeId)
+                    if (occResp.isSuccessful && occResp.body()?.data != null) {
+                        val occs = occResp.body()!!.data
+                        occsCount = occs.size
+                        for (o in occs) {
+                            occurrenceDao.insertOccurrence(
+                                TaskOccurrenceEntity(
+                                    id = o.id,
+                                    tarea_id = o.tarea_id,
+                                    fecha = o.fecha,
+                                    hora_inicio = o.hora_inicio,
+                                    hora_fin = o.hora_fin,
+                                    completada = o.completada,
+                                    completada_por = o.completada_por?.id,
+                                    notas = o.notas
+                                )
+                            )
+                        }
+                        SyncLogCollector.d(TAG, "Ocurrencias de tareas sincronizadas: $occsCount")
+                    }
+                } catch (e: Exception) {
+                    SyncLogCollector.w(TAG, "Error sincronizando ocurrencias: ${e.message}")
+                }
+
+                // If no occurrences existed on server for local tasks, auto-generate today occurrence
+                val allLocalTasks = taskDao.getAllTasksList().filter { it.hogar_id == targetHomeId }
+                for (task in allLocalTasks) {
+                    val existingOccs = occurrenceDao.getOccurrencesForTask(task.id)
+                    if (existingOccs.isEmpty()) {
                         occurrenceDao.insertOccurrence(
                             TaskOccurrenceEntity(
-                                id = o.id,
-                                tarea_id = o.tarea_id,
-                                fecha = o.fecha,
-                                hora_inicio = o.hora_inicio,
-                                hora_fin = o.hora_fin,
-                                completada = o.completada,
-                                completada_por = o.completada_por?.id,
-                                notas = o.notas
+                                tarea_id = task.id,
+                                fecha = todayStr,
+                                hora_inicio = "08:00",
+                                hora_fin = null,
+                                completada = false
                             )
                         )
-                    }
-                }
-
-                // C. Penalties
-                val penResp = ApiClient.service.getPenalties(activeHomeId)
-                if (penResp.isSuccessful && penResp.body()?.data != null) {
-                    val pens = penResp.body()!!.data
-                    for (p in pens) {
-                        penaltyDao.insertPenalty(
-                            PenaltyEntity(
-                                id = p.id,
-                                hogar_id = p.hogar_id,
-                                creado_por = p.creador?.id ?: 1,
-                                titulo = p.titulo,
-                                descripcion_motivo = p.descripcion_motivo,
-                                penalizacion = p.penalizacion,
-                                fecha_inicio = p.fecha_inicio,
-                                fecha_fin = p.fecha_fin,
-                                estado = p.estado
-                            )
-                        )
-                        for (u in p.usuarios_penalizados) {
-                            penaltyDao.insertPenaltyUser(
-                                PenaltyUserEntity(
-                                    penalizacion_id = p.id,
-                                    usuario_id = u.id
+                        if (task.fecha_inicio.isNotBlank() && task.fecha_inicio != todayStr) {
+                            occurrenceDao.insertOccurrence(
+                                TaskOccurrenceEntity(
+                                    tarea_id = task.id,
+                                    fecha = task.fecha_inicio,
+                                    hora_inicio = "08:00",
+                                    hora_fin = null,
+                                    completada = false
                                 )
                             )
                         }
                     }
                 }
 
-                // D. Problems & Conflicts
-                val probResp = ApiClient.service.getProblems(activeHomeId)
-                if (probResp.isSuccessful && probResp.body()?.data != null) {
-                    val probs = probResp.body()!!.data
-                    for (pr in probs) {
-                        problemDao.insertProblem(
-                            ProblemEntity(
-                                id = pr.id,
-                                hogar_id = pr.hogar_id,
-                                creado_por = pr.creador?.id ?: 1,
-                                titulo = pr.titulo,
-                                descripcion = pr.descripcion,
-                                hablado = pr.hablado,
-                                solucionado = pr.solucionado,
-                                acuerdo = pr.acuerdo
-                            )
-                        )
-                        for (u in pr.usuarios_involucrados) {
-                            problemDao.insertProblemUser(
-                                ProblemUserEntity(
-                                    problema_id = pr.id,
-                                    usuario_id = u.id
+                // C. Penalties (with Raw Fallback)
+                var pensCount = 0
+                try {
+                    val penResp = ApiClient.service.getPenalties(targetHomeId)
+                    if (penResp.isSuccessful && penResp.body()?.data != null) {
+                        val pens = penResp.body()!!.data
+                        pensCount = pens.size
+                        for (p in pens) {
+                            penaltyDao.insertPenalty(
+                                PenaltyEntity(
+                                    id = p.id,
+                                    hogar_id = targetHomeId,
+                                    creado_por = p.creado_por ?: p.creador?.id ?: currentUserId ?: 1,
+                                    titulo = p.titulo,
+                                    descripcion_motivo = p.descripcion_motivo,
+                                    penalizacion = p.penalizacion,
+                                    fecha_inicio = p.fecha_inicio,
+                                    fecha_fin = p.fecha_fin,
+                                    estado = p.estado
                                 )
                             )
+                            for (u in p.usuarios_penalizados) {
+                                penaltyDao.insertPenaltyUser(
+                                    PenaltyUserEntity(
+                                        penalizacion_id = p.id,
+                                        usuario_id = u.id
+                                    )
+                                )
+                            }
                         }
-                        for (pov in pr.puntos_vista) {
-                            problemDao.insertPointOfView(
-                                ProblemPointOfViewEntity(
-                                    id = pov.id,
-                                    problema_id = pr.id,
-                                    usuario_id = pov.usuario_id,
-                                    contenido = pov.contenido
+                        SyncLogCollector.d(TAG, "Penalizaciones sincronizadas: $pensCount")
+                    }
+                } catch (e: Exception) {
+                    SyncLogCollector.w(TAG, "Error sincronizando penalizaciones vía Retrofit: ${e.message}")
+                }
+
+                if (pensCount == 0) {
+                    val rawPens = fetchRawJsonArray("hogares/$targetHomeId/penalizaciones")
+                    if (rawPens != null) {
+                        for (i in 0 until rawPens.length()) {
+                            val obj = rawPens.optJSONObject(i) ?: continue
+                            val pId = obj.optInt("id", 0)
+                            val pTitulo = obj.optString("titulo", "")
+                            if (pId > 0 && pTitulo.isNotBlank()) {
+                                penaltyDao.insertPenalty(
+                                    PenaltyEntity(
+                                        id = pId,
+                                        hogar_id = targetHomeId,
+                                        creado_por = obj.optInt("creado_por", currentUserId ?: 1),
+                                        titulo = pTitulo,
+                                        descripcion_motivo = obj.optString("descripcion_motivo", ""),
+                                        penalizacion = obj.optString("penalizacion", ""),
+                                        fecha_inicio = obj.optString("fecha_inicio", todayStr),
+                                        fecha_fin = if (obj.isNull("fecha_fin")) null else obj.optString("fecha_fin"),
+                                        estado = obj.optString("estado", "activa")
+                                    )
                                 )
-                            )
+                            }
                         }
                     }
                 }
 
-                // E. Needs Lists & Items
-                val needsResp = ApiClient.service.getNeedLists(activeHomeId)
-                if (needsResp.isSuccessful && needsResp.body()?.data != null) {
-                    val lists = needsResp.body()!!.data
-                    for (l in lists) {
-                        needListDao.insertList(
-                            NeedListEntity(
-                                id = l.id,
-                                hogar_id = l.hogar_id,
-                                creado_por = l.creador?.id ?: 1,
-                                titulo = l.titulo,
-                                estado = l.estado
-                            )
-                        )
-                        for (item in l.items) {
-                            needListDao.insertItem(
-                                NeedItemEntity(
-                                    id = item.id,
-                                    lista_id = l.id,
-                                    producto_nombre = item.producto_nombre,
-                                    cantidad = item.cantidad,
-                                    fecha_necesaria = item.fecha_necesaria,
-                                    comprador_id = item.comprador?.id,
-                                    estado = item.estado,
-                                    notas = item.notas
+                // D. Problems & Conflicts (with Raw Fallback)
+                var probsCount = 0
+                try {
+                    val probResp = ApiClient.service.getProblems(targetHomeId)
+                    if (probResp.isSuccessful && probResp.body()?.data != null) {
+                        val probs = probResp.body()!!.data
+                        probsCount = probs.size
+                        for (pr in probs) {
+                            problemDao.insertProblem(
+                                ProblemEntity(
+                                    id = pr.id,
+                                    hogar_id = targetHomeId,
+                                    creado_por = pr.creado_por ?: pr.creador?.id ?: currentUserId ?: 1,
+                                    titulo = pr.titulo,
+                                    descripcion = pr.descripcion,
+                                    hablado = pr.hablado,
+                                    solucionado = pr.solucionado,
+                                    acuerdo = pr.acuerdo
                                 )
                             )
+                            for (u in pr.usuarios_involucrados) {
+                                problemDao.insertProblemUser(
+                                    ProblemUserEntity(
+                                        problema_id = pr.id,
+                                        usuario_id = u.id
+                                    )
+                                )
+                            }
+                            for (pov in pr.puntos_vista) {
+                                problemDao.insertPointOfView(
+                                    ProblemPointOfViewEntity(
+                                        id = pov.id,
+                                        problema_id = pr.id,
+                                        usuario_id = pov.usuario_id,
+                                        contenido = pov.contenido
+                                    )
+                                )
+                            }
+                        }
+                        SyncLogCollector.d(TAG, "Problemas sincronizados vía Retrofit: $probsCount")
+                    }
+                } catch (e: Exception) {
+                    SyncLogCollector.w(TAG, "Error sincronizando problemas vía Retrofit: ${e.message}")
+                }
+
+                if (probsCount == 0) {
+                    val rawProbs = fetchRawJsonArray("hogares/$targetHomeId/problemas")
+                    if (rawProbs != null) {
+                        for (i in 0 until rawProbs.length()) {
+                            val obj = rawProbs.optJSONObject(i) ?: continue
+                            val prId = obj.optInt("id", 0)
+                            val prTitulo = obj.optString("titulo", "")
+                            if (prId > 0 && prTitulo.isNotBlank()) {
+                                problemDao.insertProblem(
+                                    ProblemEntity(
+                                        id = prId,
+                                        hogar_id = targetHomeId,
+                                        creado_por = obj.optInt("creado_por", currentUserId ?: 1),
+                                        titulo = prTitulo,
+                                        descripcion = obj.optString("descripcion", ""),
+                                        hablado = obj.optBoolean("hablado", false),
+                                        solucionado = obj.optBoolean("solucionado", false),
+                                        acuerdo = if (obj.isNull("acuerdo")) null else obj.optString("acuerdo")
+                                    )
+                                )
+                                probsCount++
+                            }
+                        }
+                        SyncLogCollector.s(TAG, "Problemas sincronizados vía Raw JSON: $probsCount")
+                    }
+                }
+
+                // E. Needs Lists & Items (with Raw Fallback)
+                var needsCount = 0
+                try {
+                    val needsResp = ApiClient.service.getNeedLists(targetHomeId)
+                    if (needsResp.isSuccessful && needsResp.body()?.data != null) {
+                        val lists = needsResp.body()!!.data
+                        needsCount = lists.size
+                        for (l in lists) {
+                            needListDao.insertList(
+                                NeedListEntity(
+                                    id = l.id,
+                                    hogar_id = targetHomeId,
+                                    creado_por = l.creado_por ?: l.creador?.id ?: currentUserId ?: 1,
+                                    titulo = l.titulo,
+                                    estado = l.estado
+                                )
+                            )
+                            for (item in l.items) {
+                                needListDao.insertItem(
+                                    NeedItemEntity(
+                                        id = item.id,
+                                        lista_id = l.id,
+                                        producto_nombre = item.producto_nombre,
+                                        cantidad = item.cantidad,
+                                        fecha_necesaria = item.fecha_necesaria,
+                                        comprador_id = item.comprador?.id,
+                                        estado = item.estado,
+                                        notas = item.notas
+                                    )
+                                )
+                            }
+                        }
+                        SyncLogCollector.d(TAG, "Listas de compras sincronizadas: $needsCount")
+                    }
+                } catch (e: Exception) {
+                    SyncLogCollector.w(TAG, "Error sincronizando listas de necesidades vía Retrofit: ${e.message}")
+                }
+
+                if (needsCount == 0) {
+                    val rawNeeds = fetchRawJsonArray("hogares/$targetHomeId/necesidades")
+                    if (rawNeeds != null) {
+                        for (i in 0 until rawNeeds.length()) {
+                            val obj = rawNeeds.optJSONObject(i) ?: continue
+                            val lId = obj.optInt("id", 0)
+                            val lTitulo = obj.optString("titulo", "")
+                            if (lId > 0 && lTitulo.isNotBlank()) {
+                                needListDao.insertList(
+                                    NeedListEntity(
+                                        id = lId,
+                                        hogar_id = targetHomeId,
+                                        creado_por = obj.optInt("creado_por", currentUserId ?: 1),
+                                        titulo = lTitulo,
+                                        estado = obj.optString("estado", "activa")
+                                    )
+                                )
+                            }
                         }
                     }
                 }
 
-                // F. Goals & Compounds
-                val goalsResp = ApiClient.service.getGoals(activeHomeId)
-                if (goalsResp.isSuccessful && goalsResp.body()?.data != null) {
-                    val goals = goalsResp.body()!!.data
-                    for (g in goals) {
-                        goalDao.insertGoal(
-                            GoalEntity(
-                                id = g.id,
-                                hogar_id = g.hogar_id,
-                                creado_por = g.creador?.id ?: 1,
-                                titulo = g.titulo,
-                                descripcion = g.descripcion,
-                                tipo = g.tipo,
-                                completado = g.completado,
-                                fecha_limite_original = g.fecha_limite_original,
-                                fecha_limite_actual = g.fecha_limite_actual
-                            )
-                        )
-                        for (pt in g.puntos) {
-                            goalDao.insertGoalPoint(
-                                GoalPointEntity(
-                                    id = pt.id,
-                                    objetivo_id = g.id,
-                                    titulo = pt.titulo,
-                                    descripcion = pt.descripcion,
-                                    asignado_a = pt.asignado?.id,
-                                    completado = pt.completado,
-                                    completado_por = pt.completado_por?.id,
-                                    orden = pt.orden
+                // F. Goals & Compound Missions (with Raw Fallback)
+                var goalsCount = 0
+                try {
+                    val goalsResp = ApiClient.service.getGoals(targetHomeId)
+                    if (goalsResp.isSuccessful && goalsResp.body()?.data != null) {
+                        val goals = goalsResp.body()!!.data
+                        goalsCount = goals.size
+                        for (g in goals) {
+                            goalDao.insertGoal(
+                                GoalEntity(
+                                    id = g.id,
+                                    hogar_id = targetHomeId,
+                                    creado_por = g.creado_por ?: g.creador?.id ?: currentUserId ?: 1,
+                                    titulo = g.titulo,
+                                    descripcion = g.descripcion,
+                                    tipo = g.tipo,
+                                    completado = g.completado,
+                                    fecha_limite_original = g.fecha_limite_original,
+                                    fecha_limite_actual = g.fecha_limite_actual
                                 )
                             )
+                            for (pt in g.puntos) {
+                                goalDao.insertGoalPoint(
+                                    GoalPointEntity(
+                                        id = pt.id,
+                                        objetivo_id = g.id,
+                                        titulo = pt.titulo,
+                                        descripcion = pt.descripcion,
+                                        asignado_a = pt.asignado?.id,
+                                        completado = pt.completado,
+                                        completado_por = pt.completado_por?.id,
+                                        orden = pt.orden
+                                    )
+                                )
+                            }
+                        }
+                        SyncLogCollector.d(TAG, "Metas sincronizadas: $goalsCount")
+                    }
+                } catch (e: Exception) {
+                    SyncLogCollector.w(TAG, "Error sincronizando metas vía Retrofit: ${e.message}")
+                }
+
+                if (goalsCount == 0) {
+                    val rawGoals = fetchRawJsonArray("hogares/$targetHomeId/objetivos")
+                    if (rawGoals != null) {
+                        for (i in 0 until rawGoals.length()) {
+                            val obj = rawGoals.optJSONObject(i) ?: continue
+                            val gId = obj.optInt("id", 0)
+                            val gTitulo = obj.optString("titulo", "")
+                            if (gId > 0 && gTitulo.isNotBlank()) {
+                                goalDao.insertGoal(
+                                    GoalEntity(
+                                        id = gId,
+                                        hogar_id = targetHomeId,
+                                        creado_por = obj.optInt("creado_por", currentUserId ?: 1),
+                                        titulo = gTitulo,
+                                        descripcion = if (obj.isNull("descripcion")) null else obj.optString("descripcion"),
+                                        tipo = obj.optString("tipo", "simple"),
+                                        completado = obj.optBoolean("completado", false),
+                                        fecha_limite_original = obj.optString("fecha_limite_original", todayStr),
+                                        fecha_limite_actual = obj.optString("fecha_limite_actual", todayStr)
+                                    )
+                                )
+                            }
                         }
                     }
                 }

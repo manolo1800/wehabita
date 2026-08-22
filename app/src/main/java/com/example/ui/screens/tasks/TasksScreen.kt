@@ -9,6 +9,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.Note
 import androidx.compose.material.icons.automirrored.outlined.NoteAdd
 import androidx.compose.material.icons.filled.*
@@ -45,18 +47,24 @@ fun TasksScreen(
     val members by viewModel.homeMembers.collectAsState()
     val currentUser by viewModel.currentUser.collectAsState()
 
+    var viewMode by remember { mutableStateOf("date") } // "date" or "all"
     var filterStatus by remember { mutableStateOf("all") }
     var showStatsDialog by remember { mutableStateOf(false) }
     var taskNoteDialogOccurrence by remember { mutableStateOf<OccurrenceWithDetails?>(null) }
     var noteText by remember { mutableStateOf("") }
+    var editingTask by remember { mutableStateOf<com.example.data.local.entities.TaskEntity?>(null) }
 
     val canCreate = viewModel.hasPrivilege("crear_tareas")
     val canMark = viewModel.hasPrivilege("marcar_tareas")
 
-    val completedCount = occurrences.count { it.occurrence.completada }
-    val pendingCount = occurrences.size - completedCount
+    val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+    val todayDate = dateFormat.format(Date())
 
-    val filteredOccurrences = occurrences.filter {
+    val displayOccurrences = if (viewMode == "date") occurrences else allOccurrences
+    val completedCount = displayOccurrences.count { it.occurrence.completada }
+    val pendingCount = displayOccurrences.size - completedCount
+
+    val filteredOccurrences = displayOccurrences.filter {
         when (filterStatus) {
             "completed" -> it.occurrence.completada
             "pending" -> !it.occurrence.completada
@@ -64,15 +72,12 @@ fun TasksScreen(
         }
     }
 
-    val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
-    val todayDate = dateFormat.format(Date())
-
     Scaffold(
         floatingActionButton = {
             if (canCreate) {
                 FloatingActionButton(
                     onClick = onOpenCreateTask,
-                    containerColor = IndigoPrimary,
+                    containerColor = SageGreenPrimary,
                     contentColor = Color.White,
                     modifier = Modifier.testTag("fab_create_task")
                 ) {
@@ -89,7 +94,7 @@ fun TasksScreen(
         ) {
             Spacer(modifier = Modifier.height(8.dp))
 
-            // Date Navigation Row
+            // Header & Recuento button
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -102,7 +107,7 @@ fun TasksScreen(
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = "Fecha: $selectedDate ${if (selectedDate == todayDate) "(Hoy)" else ""}",
+                        text = if (viewMode == "date") "Fecha: $selectedDate ${if (selectedDate == todayDate) "(Hoy)" else ""}" else "Mostrando todo el historial",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -118,7 +123,84 @@ fun TasksScreen(
                 }
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Mode Selector: "Por Fecha" vs "Todas las Tareas"
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                FilterChip(
+                    selected = viewMode == "date",
+                    onClick = { viewMode = "date" },
+                    label = { Text("Día Seleccionado (${occurrences.size})") },
+                    leadingIcon = { Icon(Icons.Filled.CalendarToday, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                    modifier = Modifier.weight(1f)
+                )
+                FilterChip(
+                    selected = viewMode == "all",
+                    onClick = { viewMode = "all" },
+                    label = { Text("Todas (${allOccurrences.size})") },
+                    leadingIcon = { Icon(Icons.Filled.ListAlt, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                    modifier = Modifier.weight(1f)
+                )
+            }
+
+            // Date Navigation (if in date view)
+            if (viewMode == "date") {
+                Spacer(modifier = Modifier.height(8.dp))
+                Card(
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        IconButton(
+                            onClick = {
+                                try {
+                                    val cal = Calendar.getInstance()
+                                    cal.time = dateFormat.parse(selectedDate) ?: Date()
+                                    cal.add(Calendar.DAY_OF_YEAR, -1)
+                                    viewModel.setSelectedDate(dateFormat.format(cal.time))
+                                } catch (_: Exception) {}
+                            }
+                        ) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Día anterior")
+                        }
+
+                        TextButton(
+                            onClick = { viewModel.setSelectedDate(todayDate) }
+                        ) {
+                            Text(
+                                text = if (selectedDate == todayDate) "Hoy ($selectedDate)" else selectedDate,
+                                fontWeight = FontWeight.Bold,
+                                color = IndigoPrimary
+                            )
+                        }
+
+                        IconButton(
+                            onClick = {
+                                try {
+                                    val cal = Calendar.getInstance()
+                                    cal.time = dateFormat.parse(selectedDate) ?: Date()
+                                    cal.add(Calendar.DAY_OF_YEAR, 1)
+                                    viewModel.setSelectedDate(dateFormat.format(cal.time))
+                                } catch (_: Exception) {}
+                            }
+                        ) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = "Día siguiente")
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
 
             // Summary Stats Pill Card
             Card(
@@ -134,7 +216,7 @@ fun TasksScreen(
                     horizontalArrangement = Arrangement.SpaceEvenly,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    StatPill(count = occurrences.size, label = "Total", color = ElegantPurplePrimary)
+                    StatPill(count = displayOccurrences.size, label = "Total", color = ElegantPurplePrimary)
                     VerticalDivider(modifier = Modifier.height(28.dp), color = ElegantDarkOutline)
                     StatPill(count = completedCount, label = "Hechas", color = ElegantSuccessGreen)
                     VerticalDivider(modifier = Modifier.height(28.dp), color = ElegantDarkOutline)
@@ -142,7 +224,7 @@ fun TasksScreen(
                 }
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(10.dp))
 
             // Filter Chips
             Row(
@@ -152,7 +234,7 @@ fun TasksScreen(
                 FilterChip(
                     selected = filterStatus == "all",
                     onClick = { filterStatus = "all" },
-                    label = { Text("Todas (${occurrences.size})") }
+                    label = { Text("Todas (${displayOccurrences.size})") }
                 )
                 FilterChip(
                     selected = filterStatus == "pending",
@@ -166,7 +248,7 @@ fun TasksScreen(
                 )
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(10.dp))
 
             if (filteredOccurrences.isEmpty()) {
                 Box(
@@ -184,10 +266,16 @@ fun TasksScreen(
                         )
                         Spacer(modifier = Modifier.height(12.dp))
                         Text(
-                            text = if (filterStatus == "completed") "Aún no hay tareas completadas" else "No hay tareas registradas para este filtro",
+                            text = if (filterStatus == "completed") "Aún no hay tareas completadas" else "No hay tareas registradas para esta vista",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                        if (viewMode == "date" && allOccurrences.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            FilledTonalButton(onClick = { viewMode = "all" }) {
+                                Text("Ver todas las tareas del hogar (${allOccurrences.size})")
+                            }
+                        }
                     }
                 }
             } else {
@@ -232,14 +320,14 @@ fun TasksScreen(
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(
-                                            text = task.titulo,
+                                            text = task?.titulo ?: "Tarea",
                                             style = MaterialTheme.typography.titleMedium,
                                             fontWeight = FontWeight.Bold,
                                             color = if (occ.completada) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface
                                         )
-                                        if (!task.descripcion.isNullOrBlank()) {
+                                        if (!task?.descripcion.isNullOrBlank()) {
                                             Text(
-                                                text = task.descripcion,
+                                                text = task?.descripcion ?: "",
                                                 style = MaterialTheme.typography.bodySmall,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                                 maxLines = 2,
@@ -258,6 +346,31 @@ fun TasksScreen(
                                             contentDescription = "Notas",
                                             tint = if (!occ.notas.isNullOrBlank()) IndigoPrimary else MaterialTheme.colorScheme.outline
                                         )
+                                    }
+
+                                    if (task != null) {
+                                        IconButton(
+                                            onClick = {
+                                                editingTask = task
+                                            }
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Outlined.Edit,
+                                                contentDescription = "Editar",
+                                                tint = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                        IconButton(
+                                            onClick = {
+                                                viewModel.deleteTask(task.id)
+                                            }
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Outlined.Delete,
+                                                contentDescription = "Eliminar",
+                                                tint = MaterialTheme.colorScheme.error
+                                            )
+                                        }
                                     }
                                 }
 
@@ -288,7 +401,7 @@ fun TasksScreen(
                                                 )
                                                 Spacer(modifier = Modifier.width(4.dp))
                                                 Text(
-                                                    text = "${occ.hora_inicio} ${if (occ.hora_fin != null) "a " + occ.hora_fin else ""}",
+                                                    text = "${occ.fecha} ${occ.hora_inicio} ${if (occ.hora_fin != null) "a " + occ.hora_fin else ""}",
                                                     fontSize = 12.sp,
                                                     fontWeight = FontWeight.Bold,
                                                     color = IndigoPrimary
@@ -297,14 +410,14 @@ fun TasksScreen(
                                         }
 
                                         Surface(
-                                            color = if (task.tipo == "fija") TealTertiaryContainer else PurpleAccentContainer,
+                                            color = if (task?.tipo == "fija") TealTertiaryContainer else PurpleAccentContainer,
                                             shape = RoundedCornerShape(8.dp)
                                         ) {
                                             Text(
-                                                text = if (task.tipo == "fija") "Recurrente (Fija)" else "Única",
+                                                text = if (task?.tipo == "fija") "Recurrente" else "Única",
                                                 fontSize = 11.sp,
                                                 fontWeight = FontWeight.SemiBold,
-                                                color = if (task.tipo == "fija") TealTertiary else PurpleAccent,
+                                                color = if (task?.tipo == "fija") TealTertiary else PurpleAccent,
                                                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
                                             )
                                         }
@@ -358,7 +471,7 @@ fun TasksScreen(
             text = {
                 Column {
                     Text(
-                        text = taskNoteDialogOccurrence!!.task.titulo,
+                        text = taskNoteDialogOccurrence?.task?.titulo ?: "Tarea",
                         fontWeight = FontWeight.Bold,
                         style = MaterialTheme.typography.bodyMedium
                     )
@@ -507,6 +620,14 @@ fun TasksScreen(
                     Text("Cerrar")
                 }
             }
+        )
+    }
+
+    editingTask?.let { currentEditingTask ->
+        EditTaskDialog(
+            task = currentEditingTask,
+            viewModel = viewModel,
+            onDismiss = { editingTask = null }
         )
     }
 }

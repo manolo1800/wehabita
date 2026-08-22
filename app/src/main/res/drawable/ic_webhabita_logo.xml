@@ -1,0 +1,79 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="200dp"
+    android:height="200dp"
+    android:viewportWidth="200"
+    android:viewportHeight="200">
+
+    <!-- Soft Cream Rounded Base Container -->
+    <path
+        android:fillColor="#FDFBF7"
+        android:pathData="M30,10 L170,10 A20,20 0 0,1 190,30 L190,170 A20,20 0 0,1 170,190 L30,190 A20,20 0 0,1 10,170 L10,30 A20,20 0 0,1 30,10 Z" />
+
+    <!-- Terracotta Chimney on Right Slope of Roof -->
+    <path
+        android:fillColor="#C37B68"
+        android:pathData="M124,53 L132,53 L132,72 L124,67 Z" />
+
+    <!-- 2x2 Terracotta Window Panes under Roof Peak -->
+    <!-- Top-Left Pane -->
+    <path
+        android:fillColor="#C37B68"
+        android:pathData="M91,73 L97,73 L97,79 L91,79 Z" />
+    <!-- Top-Right Pane -->
+    <path
+        android:fillColor="#C37B68"
+        android:pathData="M103,73 L109,73 L109,79 L103,79 Z" />
+    <!-- Bottom-Left Pane -->
+    <path
+        android:fillColor="#C37B68"
+        android:pathData="M91,83 L97,83 L97,89 L91,89 Z" />
+    <!-- Bottom-Right Pane -->
+    <path
+        android:fillColor="#C37B68"
+        android:pathData="M103,83 L109,83 L109,89 L103,89 Z" />
+
+    <!-- Sage Green Roof Line -->
+    <path
+        android:strokeColor="#7A8D7B"
+        android:strokeWidth="7"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:fillColor="#00000000"
+        android:pathData="M58,79 L100,51 L146,81" />
+
+    <!-- Sage Green 'w' Shape (Left Half) -->
+    <!-- Left vertical stem -->
+    <path
+        android:fillColor="#7A8D7B"
+        android:pathData="M58,88 L66,88 L66,114 C66,120 70,124 76,124 C82,124 86,120 86,114 L86,96 L94,96 L94,114 C94,120 98,124 104,124 C110,124 114,120 114,114 L114,96 L114,96 C114,96 114,88 114,88" />
+    <!-- Stylized clean path for the w character -->
+    <path
+        android:strokeColor="#7A8D7B"
+        android:strokeWidth="8"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:fillColor="#00000000"
+        android:pathData="M62,90 L62,112 C62,120 70,124 78,124 C84,124 89,119 90,113 L90,97 M90,113 C91,119 96,124 102,124 C110,124 118,120 118,112 L118,97" />
+
+    <!-- Earthy Brown 'h' Shape (Right Half) -->
+    <!-- Main vertical stem extending up to roofline -->
+    <path
+        android:fillColor="#7D756D"
+        android:pathData="M110,58 L119,58 L119,124 L110,124 Z" />
+    <!-- Rounded Arch of the 'h' -->
+    <path
+        android:strokeColor="#7D756D"
+        android:strokeWidth="8"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:pathData="M115,95 C122,89 133,89 140,96 C145,101 147,108 147,116 L147,124" />
+
+    <!-- Terracotta Accent Underline below 'h' / center -->
+    <path
+        android:strokeColor="#C37B68"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:pathData="M92,160 L112,160" />
+
+</vector>

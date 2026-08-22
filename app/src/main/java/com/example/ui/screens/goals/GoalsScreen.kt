@@ -308,12 +308,21 @@ fun GoalCard(
                     }
                 }
 
-                IconButton(onClick = onPostpone) {
-                    Icon(
-                        Icons.Outlined.EventRepeat,
-                        contentDescription = "Aplazar",
-                        tint = CoralSecondary
-                    )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onPostpone) {
+                        Icon(
+                            Icons.Outlined.EventRepeat,
+                            contentDescription = "Aplazar",
+                            tint = CoralSecondary
+                        )
+                    }
+                    IconButton(onClick = { viewModel.deleteGoal(goal.id) }) {
+                        Icon(
+                            Icons.Outlined.Delete,
+                            contentDescription = "Eliminar",
+                            tint = MaterialTheme.colorScheme.error
+                        )
+                    }
                 }
             }
 

@@ -121,7 +121,7 @@ fun DashboardScreen(
 
                     Text(
                         text = if (nextPending != null) {
-                            if (!nextPending.task.descripcion.isNullOrBlank()) nextPending.task.descripcion else "Tarea programada para hoy"
+                            if (!nextPending.task?.descripcion.isNullOrBlank()) nextPending.task?.descripcion ?: "" else "Tarea programada para hoy"
                         } else {
                             "Hogar: ${currentHome?.nombre ?: "Mi Casa"} • $completedCount de $totalOccurrences tareas hechas"
                         },
@@ -141,8 +141,8 @@ fun DashboardScreen(
                             enabled = canMark,
                             shape = RoundedCornerShape(100.dp),
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = ElegantPurplePrimary,
-                                contentColor = ElegantPurpleDark
+                                containerColor = SageGreenPrimary,
+                                contentColor = Color.White
                             ),
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -506,7 +506,7 @@ fun DashboardScreen(
                         Spacer(modifier = Modifier.width(8.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = task.titulo,
+                                text = task?.titulo ?: "Tarea",
                                 style = MaterialTheme.typography.bodyLarge,
                                 fontWeight = FontWeight.SemiBold,
                                 color = if (occ.completada) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface

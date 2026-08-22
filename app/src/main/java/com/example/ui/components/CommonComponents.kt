@@ -91,40 +91,48 @@ fun WeHabitaTopAppBar(
 ) {
     Surface(
         color = MaterialTheme.colorScheme.background,
-        border = androidx.compose.foundation.BorderStroke(0.5.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+        border = androidx.compose.foundation.BorderStroke(0.5.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
     ) {
         TopAppBar(
             title = {
-                Column {
-                    Text(
-                        text = "WEHABITA",
-                        color = ElegantPurplePrimary,
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = 1.5.sp
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    WebHabitaLogo(
+                        size = 36.dp,
+                        showCardContainer = true,
+                        showText = false
                     )
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .clickable { onSwitchHomeClick() }
-                            .padding(vertical = 2.dp)
-                            .testTag("home_selector_button")
-                    ) {
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Column {
                         Text(
-                            text = currentHome?.nombre ?: "Seleccionar Hogar",
-                            style = MaterialTheme.typography.titleMedium,
+                            text = "webhabita",
+                            color = SageGreenPrimary,
+                            style = MaterialTheme.typography.labelMedium,
                             fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onBackground,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                            letterSpacing = 1.5.sp
                         )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Icon(
-                            imageVector = Icons.Filled.ArrowDropDown,
-                            contentDescription = "Cambiar hogar",
-                            tint = ElegantPurplePrimary
-                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { onSwitchHomeClick() }
+                                .padding(vertical = 1.dp)
+                                .testTag("home_selector_button")
+                        ) {
+                            Text(
+                                text = currentHome?.nombre ?: "Seleccionar Hogar",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = EarthyDarkText,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Icon(
+                                imageVector = Icons.Filled.ArrowDropDown,
+                                contentDescription = "Cambiar hogar",
+                                tint = TerracottaSecondary
+                            )
+                        }
                     }
                 }
             },
@@ -175,8 +183,8 @@ fun WeHabitaBottomBar(
     onNavigate: (NavigationDestination) -> Unit
 ) {
     Surface(
-        color = ElegantDarkSurface,
-        border = androidx.compose.foundation.BorderStroke(1.dp, ElegantDarkOutline.copy(alpha = 0.5f))
+        color = SandSurface,
+        border = androidx.compose.foundation.BorderStroke(1.dp, SandOutline.copy(alpha = 0.5f))
     ) {
         NavigationBar(
             containerColor = Color.Transparent,
@@ -201,11 +209,11 @@ fun WeHabitaBottomBar(
                         )
                     },
                     colors = NavigationBarItemDefaults.colors(
-                        selectedIconColor = ElegantOnPurpleContainer,
-                        selectedTextColor = ElegantPurplePrimary,
-                        indicatorColor = ElegantPurpleContainer,
-                        unselectedIconColor = ElegantOnSurfaceVariant.copy(alpha = 0.7f),
-                        unselectedTextColor = ElegantOnSurfaceVariant.copy(alpha = 0.7f)
+                        selectedIconColor = OnSageGreenContainer,
+                        selectedTextColor = EarthyDarkText,
+                        indicatorColor = SageGreenContainer,
+                        unselectedIconColor = EarthyMediumGray.copy(alpha = 0.8f),
+                        unselectedTextColor = EarthyMediumGray.copy(alpha = 0.8f)
                     ),
                     modifier = Modifier.testTag("nav_${destination.name.lowercase()}")
                 )

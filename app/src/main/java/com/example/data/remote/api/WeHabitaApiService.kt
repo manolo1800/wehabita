@@ -220,6 +220,13 @@ interface WeHabitaApiService {
         @Body request: AddPointOfViewRequest
     ): Response<ApiResponse<Any>>
 
+    @DELETE("hogares/{hogarId}/problemas/{id}/puntos-vista/{povId}")
+    suspend fun deletePointOfView(
+        @Path("hogarId") homeId: Int,
+        @Path("id") problemId: Int,
+        @Path("povId") povId: Int
+    ): Response<ApiResponse<MessageData>>
+
     @PATCH("hogares/{hogarId}/problemas/{id}/estado")
     suspend fun updateProblemStatus(
         @Path("hogarId") homeId: Int,

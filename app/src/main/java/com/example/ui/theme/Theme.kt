@@ -1,55 +1,61 @@
 package com.example.ui.theme
 
-import android.os.Build
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 
-private val DarkColorScheme = darkColorScheme(
-    primary = ElegantPurplePrimary,
-    onPrimary = ElegantOnPurpleContainer,
-    primaryContainer = ElegantPurpleDark,
-    onPrimaryContainer = ElegantPurpleContainer,
-    secondary = ElegantPenaltiesRed,
-    onSecondary = ElegantPenaltiesContainer,
-    secondaryContainer = ElegantWarningContainer,
-    onSecondaryContainer = ElegantWarningAmber,
-    tertiary = ElegantTertiaryTeal,
-    onTertiary = Color(0xFF003731),
-    tertiaryContainer = ElegantTertiaryContainer,
-    onTertiaryContainer = ElegantTertiaryTeal,
-    background = ElegantDarkBackground,
-    surface = ElegantDarkSurface,
-    surfaceVariant = ElegantDarkSurfaceVariant,
-    onBackground = ElegantOnBackground,
-    onSurface = ElegantOnSurface,
-    onSurfaceVariant = ElegantOnSurfaceVariant,
-    outline = ElegantDarkOutline,
-    outlineVariant = ElegantDarkOutlineVariant,
-    error = ElegantPenaltiesRed,
-    onError = ElegantPenaltiesContainer,
-    errorContainer = ElegantPenaltiesContainer,
-    onErrorContainer = ElegantPenaltiesRed
+// WebHabita Palette:
+// #FDFBF7 (Blanco Hueso / Crema) - Fondo principal
+// #F4EFE6 (Arena / Beige Claro) - Superficies y tarjetas
+// #7A8D7B (Verde Salvia) - Acento primario
+// #C37B68 (Terracota Suave) - Acento secundario y alertas
+// #3A3530 (Marrón Café Oscuro) - Tipografía y títulos
+// #7D756D (Gris Terroso Mediano) - Subtítulos e iconos secundarios
+private val WebHabitaColorScheme = lightColorScheme(
+    primary = SageGreenPrimary,
+    onPrimary = Color.White,
+    primaryContainer = SageGreenContainer,
+    onPrimaryContainer = OnSageGreenContainer,
+
+    secondary = TerracottaSecondary,
+    onSecondary = Color.White,
+    secondaryContainer = TerracottaContainer,
+    onSecondaryContainer = OnTerracottaContainer,
+
+    tertiary = EarthyMediumGray,
+    onTertiary = Color.White,
+    tertiaryContainer = SandSurfaceVariant,
+    onTertiaryContainer = EarthyDarkText,
+
+    background = CreamBackground,
+    onBackground = EarthyDarkText,
+
+    surface = SandSurface,
+    onSurface = EarthyDarkText,
+    surfaceVariant = SandSurfaceVariant,
+    onSurfaceVariant = EarthyMediumGray,
+
+    surfaceContainer = SandSurfaceContainer,
+    surfaceContainerHigh = SandSurfaceContainerHigh,
+
+    outline = SandOutline,
+    outlineVariant = SandOutlineVariant,
+
+    error = TerracottaSecondary,
+    onError = Color.White,
+    errorContainer = TerracottaContainer,
+    onErrorContainer = OnTerracottaContainer
 )
-
-private val LightColorScheme = DarkColorScheme // Elegant Dark is the designated primary aesthetic
 
 @Composable
 fun WeHabitaTheme(
-    darkTheme: Boolean = true, // Default to Elegant Dark
-    dynamicColor: Boolean = false, // Use our handcrafted rich palette by default
+    darkTheme: Boolean = false,
+    dynamicColor: Boolean = false,
     content: @Composable () -> Unit
 ) {
-    val colorScheme = DarkColorScheme
-
     MaterialTheme(
-        colorScheme = colorScheme,
+        colorScheme = WebHabitaColorScheme,
         typography = Typography,
         content = content
     )

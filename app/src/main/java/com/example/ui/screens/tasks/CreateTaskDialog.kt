@@ -307,6 +307,11 @@ fun CreateTaskDialog(
                 Button(
                     onClick = {
                         if (titulo.isNotBlank() && schedules.isNotEmpty()) {
+                            val assignees = if (selectedUserIds.isEmpty()) {
+                                listOfNotNull(viewModel.currentUser.value?.id)
+                            } else {
+                                selectedUserIds.toList()
+                            }
                             viewModel.createTask(
                                 titulo = titulo,
                                 descripcion = descripcion.ifBlank { null },
@@ -314,7 +319,7 @@ fun CreateTaskDialog(
                                 fechaInicio = fechaInicio,
                                 fechaFin = if (fechaFin.isNotBlank()) fechaFin else null,
                                 horarios = schedules.toList(),
-                                assignedUserIds = selectedUserIds.toList(),
+                                assignedUserIds = assignees,
                                 onDone = onDismiss
                             )
                         }
@@ -323,7 +328,7 @@ fun CreateTaskDialog(
                         .fillMaxWidth()
                         .testTag("confirm_create_task_button"),
                     enabled = titulo.isNotBlank() && schedules.isNotEmpty(),
-                    colors = ButtonDefaults.buttonColors(containerColor = IndigoPrimary)
+                    colors = ButtonDefaults.buttonColors(containerColor = SageGreenPrimary)
                 ) {
                     Icon(Icons.Filled.Check, contentDescription = null)
                     Spacer(modifier = Modifier.width(8.dp))

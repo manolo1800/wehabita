@@ -295,24 +295,36 @@ fun PenaltyCard(
             }
 
             // Actions for Admin
-            if (canManage && isPending) {
+            if (canManage) {
                 Spacer(modifier = Modifier.height(10.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    OutlinedButton(
-                        onClick = { viewModel.updatePenaltyStatus(penalty, "cancelada") },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text("Perdonar / Cancelar", fontSize = 12.sp)
+                    if (isPending) {
+                        OutlinedButton(
+                            onClick = { viewModel.updatePenaltyStatus(penalty, "cancelada") },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Cancelar", fontSize = 12.sp)
+                        }
+                        Button(
+                            onClick = { viewModel.updatePenaltyStatus(penalty, "cumplida") },
+                            colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Cumplida ✓", fontSize = 12.sp)
+                        }
                     }
-                    Button(
-                        onClick = { viewModel.updatePenaltyStatus(penalty, "cumplida") },
-                        colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen),
-                        modifier = Modifier.weight(1f)
+                    IconButton(
+                        onClick = { viewModel.deletePenalty(penalty.id) },
+                        modifier = Modifier.size(36.dp)
                     ) {
-                        Text("Marcar Cumplida ✓", fontSize = 12.sp)
+                        Icon(
+                            Icons.Outlined.Delete,
+                            contentDescription = "Eliminar",
+                            tint = MaterialTheme.colorScheme.error
+                        )
                     }
                 }
             }

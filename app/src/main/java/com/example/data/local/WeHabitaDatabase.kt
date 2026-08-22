@@ -39,7 +39,7 @@ import java.util.Locale
         GoalPointEntity::class,
         SyncQueueEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class WeHabitaDatabase : RoomDatabase() {

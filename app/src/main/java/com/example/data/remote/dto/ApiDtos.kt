@@ -5,19 +5,21 @@ import com.squareup.moshi.JsonClass
 // 1. Generic Envelopes
 @JsonClass(generateAdapter = true)
 data class ApiResponse<T>(
-    val success: Boolean,
+    val success: Boolean = true,
     val data: T,
-    val timestamp: String? = null
+    val timestamp: String? = null,
+    val message: String? = null,
+    val error: String? = null
 )
 
 @JsonClass(generateAdapter = true)
 data class MessageData(
-    val message: String
+    val message: String = ""
 )
 
 @JsonClass(generateAdapter = true)
 data class HealthData(
-    val status: String,
+    val status: String = "ok",
     val service: String? = null,
     val timestamp: String? = null,
     val uptime: Double? = null
@@ -52,9 +54,9 @@ data class AuthData(
 
 @JsonClass(generateAdapter = true)
 data class UserSummaryDto(
-    val id: Int,
-    val nombre: String,
-    val username: String,
+    val id: Int = 0,
+    val nombre: String = "",
+    val username: String = "",
     val codigo_usuario: String? = null,
     val email: String? = null,
     val activo: Boolean? = null
@@ -62,11 +64,11 @@ data class UserSummaryDto(
 
 @JsonClass(generateAdapter = true)
 data class UserProfileDto(
-    val id: Int,
-    val nombre: String,
-    val email: String,
-    val username: String,
-    val codigo_usuario: String,
+    val id: Int = 0,
+    val nombre: String = "",
+    val email: String = "",
+    val username: String = "",
+    val codigo_usuario: String = "",
     val rol_global: String = "usuario",
     val activo: Boolean = true,
     val fecha_registro: String? = null,
@@ -75,12 +77,12 @@ data class UserProfileDto(
 
 @JsonClass(generateAdapter = true)
 data class HogarMembershipSummaryDto(
-    val miembro_id: Int,
-    val hogar_id: Int,
-    val hogar_nombre: String,
-    val tipo_hogar: String,
-    val codigo_invitacion: String,
-    val rol: String,
+    val miembro_id: Int = 0,
+    val hogar_id: Int = 0,
+    val hogar_nombre: String = "",
+    val tipo_hogar: String = "familia",
+    val codigo_invitacion: String = "",
+    val rol: String = "miembro",
     val fecha_union: String? = null,
     val privilegios: List<String> = emptyList()
 )
@@ -100,10 +102,10 @@ data class UpdateHomeRequest(
 
 @JsonClass(generateAdapter = true)
 data class HogarDetailDto(
-    val id: Int,
-    val nombre: String,
-    val tipo_hogar: String,
-    val codigo_invitacion: String,
+    val id: Int = 0,
+    val nombre: String = "",
+    val tipo_hogar: String = "familia",
+    val codigo_invitacion: String = "",
     val fecha_creacion: String? = null,
     val creador: UserSummaryDto? = null,
     val total_miembros: Int = 0,
@@ -112,13 +114,13 @@ data class HogarDetailDto(
 
 @JsonClass(generateAdapter = true)
 data class MiembroDetailDto(
-    val id: Int,
-    val usuario_id: Int,
-    val nombre: String,
-    val username: String,
-    val email: String,
-    val codigo_usuario: String,
-    val rol: String,
+    val id: Int = 0,
+    val usuario_id: Int = 0,
+    val nombre: String = "",
+    val username: String = "",
+    val email: String = "",
+    val codigo_usuario: String = "",
+    val rol: String = "miembro",
     val fecha_union: String? = null,
     val privilegios: List<String> = emptyList()
 )
@@ -205,12 +207,13 @@ data class UpdateTaskRequest(
 
 @JsonClass(generateAdapter = true)
 data class TareaDetailDto(
-    val id: Int,
-    val hogar_id: Int,
-    val titulo: String,
+    val id: Int = 0,
+    val hogar_id: Int = 0,
+    val creado_por: Int? = null,
+    val titulo: String = "",
     val descripcion: String? = null,
     val tipo: String = "unica",
-    val fecha_inicio: String,
+    val fecha_inicio: String = "",
     val fecha_fin: String? = null,
     val activa: Boolean = true,
     val fecha_creacion: String? = null,
@@ -221,13 +224,13 @@ data class TareaDetailDto(
 
 @JsonClass(generateAdapter = true)
 data class OcurrenciaDetailDto(
-    val id: Int,
-    val tarea_id: Int,
-    val titulo: String,
+    val id: Int = 0,
+    val tarea_id: Int = 0,
+    val titulo: String = "",
     val descripcion: String? = null,
     val tipo: String = "unica",
-    val fecha: String,
-    val hora_inicio: String,
+    val fecha: String = "",
+    val hora_inicio: String = "08:00",
     val hora_fin: String? = null,
     val completada: Boolean = false,
     val fecha_completada: String? = null,
@@ -238,7 +241,7 @@ data class OcurrenciaDetailDto(
 
 @JsonClass(generateAdapter = true)
 data class CompleteOccurrenceRequest(
-    val completada: Boolean,
+    val completada: Boolean = true,
     val notas: String? = null
 )
 
@@ -250,7 +253,7 @@ data class CreatePenaltyRequest(
     val penalizacion: String,
     val fecha_inicio: String,
     val fecha_fin: String? = null,
-    val usuarios_ids: List<Int>,
+    val usuarios_ids: List<Int> = emptyList(),
     val estado: String = "activa"
 )
 
@@ -272,12 +275,13 @@ data class UpdatePenaltyStatusRequest(
 
 @JsonClass(generateAdapter = true)
 data class PenalizacionDetailDto(
-    val id: Int,
-    val hogar_id: Int,
-    val titulo: String,
-    val descripcion_motivo: String,
-    val penalizacion: String,
-    val fecha_inicio: String,
+    val id: Int = 0,
+    val hogar_id: Int = 0,
+    val creado_por: Int? = null,
+    val titulo: String = "",
+    val descripcion_motivo: String = "",
+    val penalizacion: String = "",
+    val fecha_inicio: String = "",
     val fecha_fin: String? = null,
     val fecha_creacion: String? = null,
     val estado: String = "activa",
@@ -314,19 +318,20 @@ data class UpdateProblemStatusRequest(
 
 @JsonClass(generateAdapter = true)
 data class ProblemPointOfViewDto(
-    val id: Int,
-    val usuario_id: Int,
+    val id: Int = 0,
+    val usuario_id: Int = 0,
     val usuario: UserSummaryDto? = null,
-    val contenido: String,
+    val contenido: String = "",
     val fecha_creacion: String? = null
 )
 
 @JsonClass(generateAdapter = true)
 data class ProblemaDetailDto(
-    val id: Int,
-    val hogar_id: Int,
-    val titulo: String,
-    val descripcion: String,
+    val id: Int = 0,
+    val hogar_id: Int = 0,
+    val creado_por: Int? = null,
+    val titulo: String = "",
+    val descripcion: String = "",
     val hablado: Boolean = false,
     val solucionado: Boolean = false,
     val acuerdo: String? = null,
@@ -375,10 +380,10 @@ data class UpdateItemStatusRequest(
 
 @JsonClass(generateAdapter = true)
 data class ItemDetailDto(
-    val id: Int,
-    val producto_nombre: String,
+    val id: Int = 0,
+    val producto_nombre: String = "",
     val cantidad: Int = 1,
-    val fecha_necesaria: String,
+    val fecha_necesaria: String = "",
     val estado: String = "pendiente",
     val notas: String? = null,
     val comprador: UserSummaryDto? = null
@@ -386,9 +391,10 @@ data class ItemDetailDto(
 
 @JsonClass(generateAdapter = true)
 data class ListaDetailDto(
-    val id: Int,
-    val hogar_id: Int,
-    val titulo: String,
+    val id: Int = 0,
+    val hogar_id: Int = 0,
+    val creado_por: Int? = null,
+    val titulo: String = "",
     val estado: String = "activa",
     val fecha_creacion: String? = null,
     val creador: UserSummaryDto? = null,
@@ -433,8 +439,8 @@ data class CompleteGoalRequest(
 
 @JsonClass(generateAdapter = true)
 data class GoalPointDetailDto(
-    val id: Int,
-    val titulo: String,
+    val id: Int = 0,
+    val titulo: String = "",
     val descripcion: String? = null,
     val orden: Int = 0,
     val completado: Boolean = false,
@@ -445,15 +451,16 @@ data class GoalPointDetailDto(
 
 @JsonClass(generateAdapter = true)
 data class ObjetivoDetailDto(
-    val id: Int,
-    val hogar_id: Int,
-    val titulo: String,
+    val id: Int = 0,
+    val hogar_id: Int = 0,
+    val creado_por: Int? = null,
+    val titulo: String = "",
     val descripcion: String? = null,
     val tipo: String = "simple",
     val completado: Boolean = false,
     val fecha_creacion: String? = null,
-    val fecha_limite_original: String,
-    val fecha_limite_actual: String,
+    val fecha_limite_original: String = "",
+    val fecha_limite_actual: String = "",
     val fecha_completado: String? = null,
     val fue_aplazado: Boolean = false,
     val progreso_porcentaje: Int = 0,

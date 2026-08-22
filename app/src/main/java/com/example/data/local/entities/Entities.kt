@@ -1,7 +1,6 @@
 package com.example.data.local.entities
 
 import androidx.room.Entity
-import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
 
@@ -19,7 +18,7 @@ data class UserEntity(
     val nombre: String,
     val email: String,
     val username: String,
-    val password_hash: String,
+    val password_hash: String = "",
     val codigo_usuario: String,
     val rol_global: String = "usuario", // 'admin' | 'usuario'
     val activo: Boolean = true,
@@ -29,14 +28,6 @@ data class UserEntity(
 // 2. Hogares
 @Entity(
     tableName = "hogares",
-    foreignKeys = [
-        ForeignKey(
-            entity = UserEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["creado_por"],
-            onDelete = ForeignKey.CASCADE
-        )
-    ],
     indices = [
         Index(value = ["codigo_invitacion"], unique = true),
         Index(value = ["creado_por"])
@@ -54,23 +45,10 @@ data class HomeEntity(
 // 3. Miembros de hogar
 @Entity(
     tableName = "miembros_hogar",
-    foreignKeys = [
-        ForeignKey(
-            entity = HomeEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["hogar_id"],
-            onDelete = ForeignKey.CASCADE
-        ),
-        ForeignKey(
-            entity = UserEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["usuario_id"],
-            onDelete = ForeignKey.CASCADE
-        )
-    ],
     indices = [
         Index(value = ["hogar_id", "usuario_id"], unique = true),
-        Index(value = ["usuario_id"])
+        Index(value = ["usuario_id"]),
+        Index(value = ["hogar_id"])
     ]
 )
 data class HomeMemberEntity(
@@ -96,21 +74,10 @@ data class PrivilegeEntity(
 @Entity(
     tableName = "miembro_privilegios",
     primaryKeys = ["miembro_hogar_id", "privilegio_id"],
-    foreignKeys = [
-        ForeignKey(
-            entity = HomeMemberEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["miembro_hogar_id"],
-            onDelete = ForeignKey.CASCADE
-        ),
-        ForeignKey(
-            entity = PrivilegeEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["privilegio_id"],
-            onDelete = ForeignKey.CASCADE
-        )
-    ],
-    indices = [Index(value = ["privilegio_id"])]
+    indices = [
+        Index(value = ["privilegio_id"]),
+        Index(value = ["miembro_hogar_id"])
+    ]
 )
 data class MemberPrivilegeEntity(
     val miembro_hogar_id: Int,
@@ -120,26 +87,6 @@ data class MemberPrivilegeEntity(
 // 6. Invitaciones
 @Entity(
     tableName = "invitaciones",
-    foreignKeys = [
-        ForeignKey(
-            entity = HomeEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["hogar_id"],
-            onDelete = ForeignKey.CASCADE
-        ),
-        ForeignKey(
-            entity = UserEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["usuario_destino_id"],
-            onDelete = ForeignKey.SET_NULL
-        ),
-        ForeignKey(
-            entity = UserEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["creado_por"],
-            onDelete = ForeignKey.CASCADE
-        )
-    ],
     indices = [
         Index(value = ["codigo"], unique = true),
         Index(value = ["hogar_id"]),
@@ -162,20 +109,6 @@ data class InvitationEntity(
 // 7. Tareas
 @Entity(
     tableName = "tareas",
-    foreignKeys = [
-        ForeignKey(
-            entity = HomeEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["hogar_id"],
-            onDelete = ForeignKey.CASCADE
-        ),
-        ForeignKey(
-            entity = UserEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["creado_por"],
-            onDelete = ForeignKey.CASCADE
-        )
-    ],
     indices = [
         Index(value = ["hogar_id"]),
         Index(value = ["creado_por"])
@@ -197,14 +130,6 @@ data class TaskEntity(
 // 8. Tarea_horarios
 @Entity(
     tableName = "tarea_horarios",
-    foreignKeys = [
-        ForeignKey(
-            entity = TaskEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["tarea_id"],
-            onDelete = ForeignKey.CASCADE
-        )
-    ],
     indices = [Index(value = ["tarea_id"])]
 )
 data class TaskScheduleEntity(
@@ -218,21 +143,10 @@ data class TaskScheduleEntity(
 @Entity(
     tableName = "tarea_asignaciones",
     primaryKeys = ["tarea_id", "usuario_id"],
-    foreignKeys = [
-        ForeignKey(
-            entity = TaskEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["tarea_id"],
-            onDelete = ForeignKey.CASCADE
-        ),
-        ForeignKey(
-            entity = UserEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["usuario_id"],
-            onDelete = ForeignKey.CASCADE
-        )
-    ],
-    indices = [Index(value = ["usuario_id"])]
+    indices = [
+        Index(value = ["usuario_id"]),
+        Index(value = ["tarea_id"])
+    ]
 )
 data class TaskAssignmentEntity(
     val tarea_id: Int,
@@ -242,23 +156,10 @@ data class TaskAssignmentEntity(
 // 10. Tarea_ocurrencias
 @Entity(
     tableName = "tarea_ocurrencias",
-    foreignKeys = [
-        ForeignKey(
-            entity = TaskEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["tarea_id"],
-            onDelete = ForeignKey.CASCADE
-        ),
-        ForeignKey(
-            entity = UserEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["completada_por"],
-            onDelete = ForeignKey.SET_NULL
-        )
-    ],
     indices = [
-        Index(value = ["tarea_id", "fecha", "hora_inicio"], unique = true),
+        Index(value = ["tarea_id", "fecha", "hora_inicio"]),
         Index(value = ["fecha"]),
+        Index(value = ["tarea_id"]),
         Index(value = ["completada_por"])
     ]
 )
@@ -277,20 +178,6 @@ data class TaskOccurrenceEntity(
 // 11. Penalizaciones
 @Entity(
     tableName = "penalizaciones",
-    foreignKeys = [
-        ForeignKey(
-            entity = HomeEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["hogar_id"],
-            onDelete = ForeignKey.CASCADE
-        ),
-        ForeignKey(
-            entity = UserEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["creado_por"],
-            onDelete = ForeignKey.CASCADE
-        )
-    ],
     indices = [
         Index(value = ["hogar_id"]),
         Index(value = ["creado_por"])
@@ -313,21 +200,10 @@ data class PenaltyEntity(
 @Entity(
     tableName = "penalizacion_usuarios",
     primaryKeys = ["penalizacion_id", "usuario_id"],
-    foreignKeys = [
-        ForeignKey(
-            entity = PenaltyEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["penalizacion_id"],
-            onDelete = ForeignKey.CASCADE
-        ),
-        ForeignKey(
-            entity = UserEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["usuario_id"],
-            onDelete = ForeignKey.CASCADE
-        )
-    ],
-    indices = [Index(value = ["usuario_id"])]
+    indices = [
+        Index(value = ["usuario_id"]),
+        Index(value = ["penalizacion_id"])
+    ]
 )
 data class PenaltyUserEntity(
     val penalizacion_id: Int,
@@ -337,20 +213,6 @@ data class PenaltyUserEntity(
 // 13. Problemas
 @Entity(
     tableName = "problemas",
-    foreignKeys = [
-        ForeignKey(
-            entity = HomeEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["hogar_id"],
-            onDelete = ForeignKey.CASCADE
-        ),
-        ForeignKey(
-            entity = UserEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["creado_por"],
-            onDelete = ForeignKey.CASCADE
-        )
-    ],
     indices = [
         Index(value = ["hogar_id"]),
         Index(value = ["creado_por"])
@@ -372,21 +234,10 @@ data class ProblemEntity(
 @Entity(
     tableName = "problema_usuarios",
     primaryKeys = ["problema_id", "usuario_id"],
-    foreignKeys = [
-        ForeignKey(
-            entity = ProblemEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["problema_id"],
-            onDelete = ForeignKey.CASCADE
-        ),
-        ForeignKey(
-            entity = UserEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["usuario_id"],
-            onDelete = ForeignKey.CASCADE
-        )
-    ],
-    indices = [Index(value = ["usuario_id"])]
+    indices = [
+        Index(value = ["usuario_id"]),
+        Index(value = ["problema_id"])
+    ]
 )
 data class ProblemUserEntity(
     val problema_id: Int,
@@ -396,20 +247,6 @@ data class ProblemUserEntity(
 // 15. Problema_puntos_vista
 @Entity(
     tableName = "problema_puntos_vista",
-    foreignKeys = [
-        ForeignKey(
-            entity = ProblemEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["problema_id"],
-            onDelete = ForeignKey.CASCADE
-        ),
-        ForeignKey(
-            entity = UserEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["usuario_id"],
-            onDelete = ForeignKey.CASCADE
-        )
-    ],
     indices = [
         Index(value = ["problema_id"]),
         Index(value = ["usuario_id"])
@@ -426,20 +263,6 @@ data class ProblemPointOfViewEntity(
 // 16. Listas_necesidades
 @Entity(
     tableName = "listas_necesidades",
-    foreignKeys = [
-        ForeignKey(
-            entity = HomeEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["hogar_id"],
-            onDelete = ForeignKey.CASCADE
-        ),
-        ForeignKey(
-            entity = UserEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["creado_por"],
-            onDelete = ForeignKey.CASCADE
-        )
-    ],
     indices = [
         Index(value = ["hogar_id"]),
         Index(value = ["creado_por"])
@@ -457,20 +280,6 @@ data class NeedListEntity(
 // 17. Items_necesidad
 @Entity(
     tableName = "items_necesidad",
-    foreignKeys = [
-        ForeignKey(
-            entity = NeedListEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["lista_id"],
-            onDelete = ForeignKey.CASCADE
-        ),
-        ForeignKey(
-            entity = UserEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["comprador_id"],
-            onDelete = ForeignKey.SET_NULL
-        )
-    ],
     indices = [
         Index(value = ["lista_id"]),
         Index(value = ["comprador_id"])
@@ -490,20 +299,6 @@ data class NeedItemEntity(
 // 18. Objetivos
 @Entity(
     tableName = "objetivos",
-    foreignKeys = [
-        ForeignKey(
-            entity = HomeEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["hogar_id"],
-            onDelete = ForeignKey.CASCADE
-        ),
-        ForeignKey(
-            entity = UserEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["creado_por"],
-            onDelete = ForeignKey.CASCADE
-        )
-    ],
     indices = [
         Index(value = ["hogar_id"]),
         Index(value = ["creado_por"])
@@ -526,26 +321,6 @@ data class GoalEntity(
 // 19. Objetivo_puntos
 @Entity(
     tableName = "objetivo_puntos",
-    foreignKeys = [
-        ForeignKey(
-            entity = GoalEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["objetivo_id"],
-            onDelete = ForeignKey.CASCADE
-        ),
-        ForeignKey(
-            entity = UserEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["asignado_a"],
-            onDelete = ForeignKey.SET_NULL
-        ),
-        ForeignKey(
-            entity = UserEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["completado_por"],
-            onDelete = ForeignKey.SET_NULL
-        )
-    ],
     indices = [
         Index(value = ["objetivo_id"]),
         Index(value = ["asignado_a"]),
@@ -564,7 +339,7 @@ data class GoalPointEntity(
     val orden: Int = 0
 )
 
-// 20. Cola de Sincronización Offline (Mutaciones pendientes para la API REST)
+// 20. Cola de Sincronización Offline
 @Entity(
     tableName = "cola_sincronizacion",
     indices = [Index(value = ["fecha_creacion"])]
@@ -580,4 +355,3 @@ data class SyncQueueEntity(
     val intentos: Int = 0,
     val ultimo_error: String? = null
 )
-

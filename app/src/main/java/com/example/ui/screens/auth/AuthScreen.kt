@@ -29,6 +29,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.local.entities.UserEntity
+import com.example.ui.components.WebHabitaLogo
 import com.example.ui.components.MemberAvatar
 import com.example.ui.theme.*
 import com.example.viewmodel.WeHabitaViewModel
@@ -75,39 +76,18 @@ fun AuthScreen(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(72.dp)
-                            .clip(CircleShape)
-                            .background(
-                                Brush.linearGradient(
-                                    colors = listOf(ElegantPurplePrimary, ElegantPurpleDark)
-                                )
-                            ),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.Home,
-                            contentDescription = "WeHabita Logo",
-                            tint = Color.White,
-                            modifier = Modifier.size(38.dp)
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(14.dp))
-
-                    Text(
-                        text = "WEHABITA",
-                        style = MaterialTheme.typography.headlineMedium,
-                        fontWeight = FontWeight.Black,
-                        letterSpacing = 2.sp,
-                        color = ElegantPurplePrimary
+                    WebHabitaLogo(
+                        size = 110.dp,
+                        showCardContainer = true,
+                        showText = true
                     )
+
+                    Spacer(modifier = Modifier.height(10.dp))
 
                     Text(
                         text = "Convivencia, tareas y acuerdos compartidos",
                         style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = EarthyMediumGray
                     )
                 }
             }

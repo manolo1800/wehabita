@@ -535,14 +535,33 @@ fun ProblemDetailModal(
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
                 ) {
                     Column(modifier = Modifier.padding(12.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            MemberAvatar(name = author?.nombre ?: "Usuario", size = 26)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = author?.nombre ?: "Miembro",
-                                fontWeight = FontWeight.Bold,
-                                style = MaterialTheme.typography.bodyMedium
-                            )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                MemberAvatar(name = author?.nombre ?: "Usuario", size = 26)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = author?.nombre ?: "Miembro",
+                                    fontWeight = FontWeight.Bold,
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                            }
+                            if (currentUser?.id == pov.usuario_id || viewModel.hasPrivilege("resolver_problemas")) {
+                                IconButton(
+                                    onClick = { viewModel.deletePointOfView(problem.id, pov.id) },
+                                    modifier = Modifier.size(28.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Outlined.Delete,
+                                        contentDescription = "Eliminar punto de vista",
+                                        tint = MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
                         }
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
@@ -553,29 +572,47 @@ fun ProblemDetailModal(
                 }
             }
 
-            // Mark Solved Action Button
+            // Mark Solved Action Button & Delete Problem
             item {
                 Spacer(modifier = Modifier.height(8.dp))
-                Button(
-                    onClick = {
-                        viewModel.updateProblemDetails(
-                            problem = problem,
-                            hablado = true,
-                            solucionado = !problem.solucionado,
-                            acuerdo = problem.acuerdo
-                        )
-                    },
+                Row(
                     modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (problem.solucionado) MaterialTheme.colorScheme.outline else SuccessGreen
-                    )
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Icon(
-                        imageVector = if (problem.solucionado) Icons.Filled.RestartAlt else Icons.Filled.CheckCircle,
-                        contentDescription = null
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(if (problem.solucionado) "Reabrir Problema" else "Marcar como Solucionado ✓")
+                    Button(
+                        onClick = {
+                            viewModel.updateProblemDetails(
+                                problem = problem,
+                                hablado = true,
+                                solucionado = !problem.solucionado,
+                                acuerdo = problem.acuerdo
+                            )
+                        },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (problem.solucionado) MaterialTheme.colorScheme.outline else SuccessGreen
+                        )
+                    ) {
+                        Icon(
+                            imageVector = if (problem.solucionado) Icons.Filled.RestartAlt else Icons.Filled.CheckCircle,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(if (problem.solucionado) "Reabrir" else "Solucionado ✓")
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            viewModel.deleteProblem(problem.id)
+                            onDismiss()
+                        },
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                    ) {
+                        Icon(Icons.Filled.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Eliminar")
+                    }
                 }
             }
         }
