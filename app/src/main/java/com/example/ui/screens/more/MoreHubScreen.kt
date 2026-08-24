@@ -161,8 +161,8 @@ fun MoreMainList(
 
         item {
             HubCard(
-                title = "Ajustes, Perfil & Base de Datos",
-                subtitle = "Código de usuario, PostgreSQL de respaldo y SQLite local",
+                title = "Ajustes, Perfil & Servidor REST",
+                subtitle = "Código de usuario, servicios en vivo y tiempo real SSE",
                 icon = Icons.Filled.Settings,
                 iconBg = IndigoPrimary,
                 onClick = { onNavigateSub(MoreSubScreen.SETTINGS) },

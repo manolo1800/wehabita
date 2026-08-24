@@ -47,6 +47,10 @@ fun MembersScreen(
     val clipboardManager = LocalClipboardManager.current
     var copiedCode by remember { mutableStateOf(false) }
 
+    LaunchedEffect(currentHome?.id) {
+        viewModel.refreshMembers()
+    }
+
     Scaffold(
         floatingActionButton = {
             if (isAdmin || viewModel.hasPrivilege("gestionar_usuarios")) {

@@ -1,20 +1,8 @@
 package com.example.data.local.entities
 
-import androidx.room.Entity
-import androidx.room.Index
-import androidx.room.PrimaryKey
-
 // 1. Usuarios
-@Entity(
-    tableName = "usuarios",
-    indices = [
-        Index(value = ["email"], unique = true),
-        Index(value = ["username"], unique = true),
-        Index(value = ["codigo_usuario"], unique = true)
-    ]
-)
 data class UserEntity(
-    @PrimaryKey(autoGenerate = true) val id: Int = 0,
+    val id: Int = 0,
     val nombre: String,
     val email: String,
     val username: String,
@@ -26,15 +14,8 @@ data class UserEntity(
 )
 
 // 2. Hogares
-@Entity(
-    tableName = "hogares",
-    indices = [
-        Index(value = ["codigo_invitacion"], unique = true),
-        Index(value = ["creado_por"])
-    ]
-)
 data class HomeEntity(
-    @PrimaryKey(autoGenerate = true) val id: Int = 0,
+    val id: Int = 0,
     val nombre: String,
     val tipo_hogar: String = "familia", // 'soltero' | 'pareja' | 'familia'
     val codigo_invitacion: String,
@@ -43,16 +24,8 @@ data class HomeEntity(
 )
 
 // 3. Miembros de hogar
-@Entity(
-    tableName = "miembros_hogar",
-    indices = [
-        Index(value = ["hogar_id", "usuario_id"], unique = true),
-        Index(value = ["usuario_id"]),
-        Index(value = ["hogar_id"])
-    ]
-)
 data class HomeMemberEntity(
-    @PrimaryKey(autoGenerate = true) val id: Int = 0,
+    val id: Int = 0,
     val hogar_id: Int,
     val usuario_id: Int,
     val rol: String = "miembro", // 'admin' | 'miembro'
@@ -61,41 +34,21 @@ data class HomeMemberEntity(
 )
 
 // 4. Privilegios
-@Entity(
-    tableName = "privilegios",
-    indices = [Index(value = ["nombre"], unique = true)]
-)
 data class PrivilegeEntity(
-    @PrimaryKey(autoGenerate = true) val id: Int = 0,
-    val nombre: String
+    val id: Int = 0,
+    val nombre: String,
+    val descripcion: String? = null
 )
 
 // 5. Miembro_privilegios
-@Entity(
-    tableName = "miembro_privilegios",
-    primaryKeys = ["miembro_hogar_id", "privilegio_id"],
-    indices = [
-        Index(value = ["privilegio_id"]),
-        Index(value = ["miembro_hogar_id"])
-    ]
-)
 data class MemberPrivilegeEntity(
     val miembro_hogar_id: Int,
     val privilegio_id: Int
 )
 
 // 6. Invitaciones
-@Entity(
-    tableName = "invitaciones",
-    indices = [
-        Index(value = ["codigo"], unique = true),
-        Index(value = ["hogar_id"]),
-        Index(value = ["usuario_destino_id"]),
-        Index(value = ["creado_por"])
-    ]
-)
 data class InvitationEntity(
-    @PrimaryKey(autoGenerate = true) val id: Int = 0,
+    val id: Int = 0,
     val hogar_id: Int,
     val codigo: String,
     val email_destino: String? = null,
@@ -107,15 +60,8 @@ data class InvitationEntity(
 )
 
 // 7. Tareas
-@Entity(
-    tableName = "tareas",
-    indices = [
-        Index(value = ["hogar_id"]),
-        Index(value = ["creado_por"])
-    ]
-)
 data class TaskEntity(
-    @PrimaryKey(autoGenerate = true) val id: Int = 0,
+    val id: Int = 0,
     val hogar_id: Int,
     val creado_por: Int,
     val titulo: String,
@@ -128,43 +74,22 @@ data class TaskEntity(
 )
 
 // 8. Tarea_horarios
-@Entity(
-    tableName = "tarea_horarios",
-    indices = [Index(value = ["tarea_id"])]
-)
 data class TaskScheduleEntity(
-    @PrimaryKey(autoGenerate = true) val id: Int = 0,
+    val id: Int = 0,
     val tarea_id: Int,
     val hora_inicio: String, // HH:MM
     val hora_fin: String? = null // HH:MM
 )
 
 // 9. Tarea_asignaciones
-@Entity(
-    tableName = "tarea_asignaciones",
-    primaryKeys = ["tarea_id", "usuario_id"],
-    indices = [
-        Index(value = ["usuario_id"]),
-        Index(value = ["tarea_id"])
-    ]
-)
 data class TaskAssignmentEntity(
     val tarea_id: Int,
     val usuario_id: Int
 )
 
 // 10. Tarea_ocurrencias
-@Entity(
-    tableName = "tarea_ocurrencias",
-    indices = [
-        Index(value = ["tarea_id", "fecha", "hora_inicio"]),
-        Index(value = ["fecha"]),
-        Index(value = ["tarea_id"]),
-        Index(value = ["completada_por"])
-    ]
-)
 data class TaskOccurrenceEntity(
-    @PrimaryKey(autoGenerate = true) val id: Int = 0,
+    val id: Int = 0,
     val tarea_id: Int,
     val fecha: String, // YYYY-MM-DD
     val hora_inicio: String, // HH:MM
@@ -176,15 +101,8 @@ data class TaskOccurrenceEntity(
 )
 
 // 11. Penalizaciones
-@Entity(
-    tableName = "penalizaciones",
-    indices = [
-        Index(value = ["hogar_id"]),
-        Index(value = ["creado_por"])
-    ]
-)
 data class PenaltyEntity(
-    @PrimaryKey(autoGenerate = true) val id: Int = 0,
+    val id: Int = 0,
     val hogar_id: Int,
     val creado_por: Int,
     val titulo: String,
@@ -197,29 +115,14 @@ data class PenaltyEntity(
 )
 
 // 12. Penalizacion_usuarios
-@Entity(
-    tableName = "penalizacion_usuarios",
-    primaryKeys = ["penalizacion_id", "usuario_id"],
-    indices = [
-        Index(value = ["usuario_id"]),
-        Index(value = ["penalizacion_id"])
-    ]
-)
 data class PenaltyUserEntity(
     val penalizacion_id: Int,
     val usuario_id: Int
 )
 
 // 13. Problemas
-@Entity(
-    tableName = "problemas",
-    indices = [
-        Index(value = ["hogar_id"]),
-        Index(value = ["creado_por"])
-    ]
-)
 data class ProblemEntity(
-    @PrimaryKey(autoGenerate = true) val id: Int = 0,
+    val id: Int = 0,
     val hogar_id: Int,
     val creado_por: Int,
     val titulo: String,
@@ -231,29 +134,14 @@ data class ProblemEntity(
 )
 
 // 14. Problema_usuarios
-@Entity(
-    tableName = "problema_usuarios",
-    primaryKeys = ["problema_id", "usuario_id"],
-    indices = [
-        Index(value = ["usuario_id"]),
-        Index(value = ["problema_id"])
-    ]
-)
 data class ProblemUserEntity(
     val problema_id: Int,
     val usuario_id: Int
 )
 
 // 15. Problema_puntos_vista
-@Entity(
-    tableName = "problema_puntos_vista",
-    indices = [
-        Index(value = ["problema_id"]),
-        Index(value = ["usuario_id"])
-    ]
-)
 data class ProblemPointOfViewEntity(
-    @PrimaryKey(autoGenerate = true) val id: Int = 0,
+    val id: Int = 0,
     val problema_id: Int,
     val usuario_id: Int,
     val contenido: String,
@@ -261,15 +149,8 @@ data class ProblemPointOfViewEntity(
 )
 
 // 16. Listas_necesidades
-@Entity(
-    tableName = "listas_necesidades",
-    indices = [
-        Index(value = ["hogar_id"]),
-        Index(value = ["creado_por"])
-    ]
-)
 data class NeedListEntity(
-    @PrimaryKey(autoGenerate = true) val id: Int = 0,
+    val id: Int = 0,
     val hogar_id: Int,
     val creado_por: Int,
     val titulo: String,
@@ -278,15 +159,8 @@ data class NeedListEntity(
 )
 
 // 17. Items_necesidad
-@Entity(
-    tableName = "items_necesidad",
-    indices = [
-        Index(value = ["lista_id"]),
-        Index(value = ["comprador_id"])
-    ]
-)
 data class NeedItemEntity(
-    @PrimaryKey(autoGenerate = true) val id: Int = 0,
+    val id: Int = 0,
     val lista_id: Int,
     val producto_nombre: String,
     val cantidad: Int = 1,
@@ -297,15 +171,8 @@ data class NeedItemEntity(
 )
 
 // 18. Objetivos
-@Entity(
-    tableName = "objetivos",
-    indices = [
-        Index(value = ["hogar_id"]),
-        Index(value = ["creado_por"])
-    ]
-)
 data class GoalEntity(
-    @PrimaryKey(autoGenerate = true) val id: Int = 0,
+    val id: Int = 0,
     val hogar_id: Int,
     val creado_por: Int,
     val titulo: String,
@@ -319,16 +186,8 @@ data class GoalEntity(
 )
 
 // 19. Objetivo_puntos
-@Entity(
-    tableName = "objetivo_puntos",
-    indices = [
-        Index(value = ["objetivo_id"]),
-        Index(value = ["asignado_a"]),
-        Index(value = ["completado_por"])
-    ]
-)
 data class GoalPointEntity(
-    @PrimaryKey(autoGenerate = true) val id: Int = 0,
+    val id: Int = 0,
     val objetivo_id: Int,
     val titulo: String,
     val descripcion: String? = null,
@@ -339,18 +198,14 @@ data class GoalPointEntity(
     val orden: Int = 0
 )
 
-// 20. Cola de Sincronización Offline
-@Entity(
-    tableName = "cola_sincronizacion",
-    indices = [Index(value = ["fecha_creacion"])]
-)
+// 20. Cola de Sincronización
 data class SyncQueueEntity(
-    @PrimaryKey(autoGenerate = true) val id: Int = 0,
-    val endpoint: String,
-    val http_method: String, // "POST", "PUT", "PATCH", "DELETE"
+    val id: Int = 0,
+    val endpoint: String = "",
+    val http_method: String = "POST",
     val payload_json: String? = null,
-    val accion: String, // e.g. "CREAR_TAREA", "MARCAR_OCURRENCIA", "CREAR_OBJETIVO"
-    val descripcion: String,
+    val accion: String = "",
+    val descripcion: String = "",
     val fecha_creacion: Long = System.currentTimeMillis(),
     val intentos: Int = 0,
     val ultimo_error: String? = null

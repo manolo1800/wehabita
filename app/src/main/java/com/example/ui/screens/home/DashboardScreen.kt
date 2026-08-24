@@ -60,6 +60,10 @@ fun DashboardScreen(
     val activePenalties = penalties.filter { it.estado == "activa" }
     val activeProblems = problems.filter { !it.solucionado }
 
+    LaunchedEffect(currentHome?.id) {
+        viewModel.refreshDashboard()
+    }
+
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()

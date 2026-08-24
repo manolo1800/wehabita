@@ -1,54 +1,85 @@
 package com.example.data.repository
 
-import com.example.data.local.WeHabitaDatabase
 import com.example.data.local.dao.MemberWithUser
 import com.example.data.local.dao.OccurrenceWithDetails
 import com.example.data.local.entities.*
 import com.example.data.remote.api.ApiClient
 import com.example.data.remote.dto.*
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.withContext
-import org.json.JSONArray
-import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import java.util.UUID
 
-class WeHabitaRepository(
-    private val db: WeHabitaDatabase,
-    val restSyncManager: RestSyncManager = RestSyncManager(db)
-) {
-    private val userDao = db.userDao()
-    private val homeDao = db.homeDao()
-    private val homeMemberDao = db.homeMemberDao()
-    private val privilegeDao = db.privilegeDao()
-    private val invitationDao = db.invitationDao()
-    private val taskDao = db.taskDao()
-    private val taskOccurrenceDao = db.taskOccurrenceDao()
-    private val penaltyDao = db.penaltyDao()
-    private val problemDao = db.problemDao()
-    private val needListDao = db.needListDao()
-    private val goalDao = db.goalDao()
-    private val syncQueueDao = db.syncQueueDao()
+class WeHabitaRepository {
+    private val TAG = "WeHabita:Repository"
 
-    // Pending Sync Flow
-    fun getPendingSyncCount(): Flow<Int> = syncQueueDao.getPendingCount()
-    fun getPendingSyncQueue(): Flow<List<SyncQueueEntity>> = syncQueueDao.getAllPendingQueue()
+    val restSyncManager: RestSyncManager = RestSyncManager { this }
 
-    // --- Users ---
-    fun getAllUsers(): Flow<List<UserEntity>> = userDao.getAllActiveUsers()
+    // ==========================================
+    // In-Memory Reactive StateFlows
+    // ==========================================
+    private val _users = MutableStateFlow<List<UserEntity>>(emptyList())
+    private val _homes = MutableStateFlow<List<HomeEntity>>(emptyList())
+    private val _members = MutableStateFlow<List<MemberWithUser>>(emptyList())
+    private val _privileges = MutableStateFlow<List<PrivilegeEntity>>(emptyList())
+    private val _memberPrivileges = MutableStateFlow<Map<Int, List<PrivilegeEntity>>>(emptyMap())
+    private val _invitations = MutableStateFlow<List<InvitationEntity>>(emptyList())
 
-    suspend fun getUserById(id: Int): UserEntity? = userDao.getUserById(id)
+    private val _tasks = MutableStateFlow<List<TaskEntity>>(emptyList())
+    private val _taskSchedules = MutableStateFlow<Map<Int, List<TaskScheduleEntity>>>(emptyMap())
+    private val _taskAssignments = MutableStateFlow<Map<Int, List<TaskAssignmentEntity>>>(emptyMap())
+    private val _occurrences = MutableStateFlow<List<OccurrenceWithDetails>>(emptyList())
+
+    private val _penalties = MutableStateFlow<List<PenaltyEntity>>(emptyList())
+    private val _penaltyUsers = MutableStateFlow<Map<Int, List<Int>>>(emptyMap())
+
+    private val _problems = MutableStateFlow<List<ProblemEntity>>(emptyList())
+    private val _problemUsers = MutableStateFlow<Map<Int, List<Int>>>(emptyMap())
+    private val _problemPoints = MutableStateFlow<Map<Int, List<ProblemPointOfViewEntity>>>(emptyMap())
+
+    private val _needLists = MutableStateFlow<List<NeedListEntity>>(emptyList())
+    private val _needItems = MutableStateFlow<List<NeedItemEntity>>(emptyList())
+
+    private val _goals = MutableStateFlow<List<GoalEntity>>(emptyList())
+    private val _goalPoints = MutableStateFlow<Map<Int, List<GoalPointEntity>>>(emptyMap())
+
+    // Pending Sync Flow (Direct to service, always 0)
+    fun getPendingSyncCount(): Flow<Int> = flowOf(0)
+    fun getPendingSyncQueue(): Flow<List<SyncQueueEntity>> = flowOf(emptyList())
+
+    // ==========================================
+    // Users
+    // ==========================================
+    fun getAllUsers(): Flow<List<UserEntity>> = _users.asStateFlow()
+
+    suspend fun getUserById(id: Int): UserEntity? = withContext(Dispatchers.IO) {
+        _users.value.find { it.id == id } ?: try {
+            val resp = ApiClient.service.getUserById(id)
+            if (resp.isSuccessful && resp.body()?.data != null) {
+                val u = resp.body()!!.data
+                val entity = UserEntity(
+                    id = u.id,
+                    nombre = u.nombre,
+                    email = u.email,
+                    username = u.username,
+                    codigo_usuario = u.codigo_usuario,
+                    rol_global = u.rol_global,
+                    activo = u.activo
+                )
+                upsertUserInMemory(entity)
+                entity
+            } else null
+        } catch (e: Exception) {
+            null
+        }
+    }
 
     suspend fun getUserByEmailOrUsername(query: String): UserEntity? =
-        userDao.getUserByEmailOrUsername(query)
+        _users.value.find { it.email.equals(query, ignoreCase = true) || it.username.equals(query, ignoreCase = true) }
 
     suspend fun registerUser(nombre: String, email: String, username: String, passwordHash: String): Long = withContext(Dispatchers.IO) {
-        val randomCode = "USR-" + (1000..9999).random()
-
-        // 1. Try online registration first
         try {
             val resp = ApiClient.service.register(
                 RegisterRequest(
@@ -74,1271 +105,787 @@ class WeHabitaRepository(
                     rol_global = p.rol_global,
                     activo = p.activo
                 )
-                userDao.insertUser(userEntity)
+                upsertUserInMemory(userEntity)
+                SyncLogCollector.s(TAG, "Usuario registrado online exitosamente: ${p.username}")
                 return@withContext p.id.toLong()
+            } else {
+                val err = resp.errorBody()?.string() ?: "Error de registro HTTP ${resp.code()}"
+                SyncLogCollector.e(TAG, "Registro falló: $err")
+                throw Exception(err)
             }
         } catch (e: Exception) {
-            SyncLogCollector.w("WeHabita:Repo", "Registro online falló (${e.message}), guardando local...")
+            SyncLogCollector.e(TAG, "Error en registro de usuario: ${e.message}", e)
+            throw e
         }
-
-        // 2. Fallback to local SQLite + enqueue offline action
-        val user = UserEntity(
-            nombre = nombre,
-            email = email,
-            username = username,
-            password_hash = passwordHash,
-            codigo_usuario = randomCode
-        )
-        val localId = userDao.insertUser(user)
-
-        val json = JSONObject().apply {
-            put("nombre", nombre)
-            put("email", email)
-            put("username", username)
-            put("password", passwordHash)
-        }.toString()
-        restSyncManager.enqueueOfflineAction("auth/register", "POST", json, "REGISTRAR_USUARIO", "Registro de usuario $username")
-
-        return@withContext localId
     }
 
-    // --- Homes ---
-    fun getHomesForUser(userId: Int): Flow<List<HomeEntity>> = homeDao.getHomesForUser(userId)
-
-    suspend fun getHomeById(homeId: Int): HomeEntity? = homeDao.getHomeById(homeId)
-
-    private suspend fun ensureStandardPrivileges(): List<PrivilegeEntity> {
-        var list = privilegeDao.getAllPrivilegesList()
-        if (list.isEmpty()) {
-            val defaults = listOf(
-                PrivilegeEntity(nombre = "crear_tareas"),
-                PrivilegeEntity(nombre = "asignar_tareas"),
-                PrivilegeEntity(nombre = "marcar_tareas"),
-                PrivilegeEntity(nombre = "crear_problemas"),
-                PrivilegeEntity(nombre = "crear_necesidades"),
-                PrivilegeEntity(nombre = "crear_objetivos"),
-                PrivilegeEntity(nombre = "gestionar_usuarios"),
-                PrivilegeEntity(nombre = "aplicar_penalizaciones"),
-                PrivilegeEntity(nombre = "ver_reportes")
-            )
-            privilegeDao.insertPrivileges(defaults)
-            list = privilegeDao.getAllPrivilegesList()
+    private fun upsertUserInMemory(user: UserEntity) {
+        val current = _users.value.toMutableList()
+        val index = current.indexOfFirst { it.id == user.id }
+        if (index >= 0) {
+            current[index] = user
+        } else {
+            current.add(user)
         }
-        return list
+        _users.value = current
     }
+
+    // ==========================================
+    // Homes
+    // ==========================================
+    fun getHomesForUser(userId: Int): Flow<List<HomeEntity>> = _homes.asStateFlow()
+
+    suspend fun getHomeById(homeId: Int): HomeEntity? =
+        _homes.value.find { it.id == homeId }
 
     suspend fun createHome(name: String, tipo: String, createdBy: Int): Long = withContext(Dispatchers.IO) {
-        // 1. Try online REST creation first
-        val token = ApiClient.getAuthToken()
-        if (!token.isNullOrBlank()) {
-            try {
-                val resp = ApiClient.service.createHome(CreateHomeRequest(nombre = name, tipo_hogar = tipo))
-                if (resp.isSuccessful && resp.body()?.data != null) {
-                    val h = resp.body()!!.data
-                    val homeEntity = HomeEntity(
-                        id = h.id,
-                        nombre = h.nombre,
-                        tipo_hogar = h.tipo_hogar,
-                        codigo_invitacion = h.codigo_invitacion,
-                        creado_por = createdBy
-                    )
-                    homeDao.insertHome(homeEntity)
-
-                    val memberId = homeMemberDao.insertMember(
-                        HomeMemberEntity(
-                            hogar_id = h.id,
-                            usuario_id = createdBy,
-                            rol = "admin",
-                            activo = true
-                        )
-                    ).toInt()
-
-                    val privs = ensureStandardPrivileges()
-                    for (priv in privs) {
-                        privilegeDao.insertMemberPrivilege(MemberPrivilegeEntity(memberId, priv.id))
-                    }
-
-                    ApiClient.saveHomeId(h.id)
-                    SyncLogCollector.s("WeHabita:Repo", "Hogar '${h.nombre}' (#${h.id}) creado en el servidor REST con código: ${h.codigo_invitacion}")
-                    return@withContext h.id.toLong()
-                } else {
-                    SyncLogCollector.w("WeHabita:Repo", "Error al crear hogar online: HTTP ${resp.code()} ${resp.errorBody()?.string()}")
-                }
-            } catch (e: Exception) {
-                SyncLogCollector.w("WeHabita:Repo", "Fallo de conexión al crear hogar: ${e.message}")
+        try {
+            val resp = ApiClient.service.createHome(CreateHomeRequest(nombre = name, tipo_hogar = tipo))
+            if (resp.isSuccessful && resp.body()?.data != null) {
+                val h = resp.body()!!.data
+                val homeEntity = HomeEntity(
+                    id = h.id,
+                    nombre = h.nombre,
+                    tipo_hogar = h.tipo_hogar,
+                    codigo_invitacion = h.codigo_invitacion,
+                    creado_por = h.creador?.id ?: createdBy,
+                    fecha_creacion = parseTimestamp(h.fecha_creacion)
+                )
+                upsertHomeInMemory(homeEntity)
+                ApiClient.saveHomeId(h.id)
+                fetchHomes()
+                fetchAllHomeData(h.id)
+                SyncLogCollector.s(TAG, "Hogar creado online exitosamente: ${h.nombre} (ID ${h.id})")
+                return@withContext h.id.toLong()
+            } else {
+                val err = resp.errorBody()?.string() ?: "Error HTTP ${resp.code()}"
+                throw Exception(err)
             }
+        } catch (e: Exception) {
+            SyncLogCollector.e(TAG, "Error al crear hogar en el servicio: ${e.message}", e)
+            throw e
         }
-
-        // 2. Offline fallback in SQLite
-        val inviteCode = "HOG-" + (1000..9999).random()
-        val home = HomeEntity(
-            nombre = name,
-            tipo_hogar = tipo,
-            codigo_invitacion = inviteCode,
-            creado_por = createdBy
-        )
-        val localHomeId = homeDao.insertHome(home).toInt()
-
-        val memberId = homeMemberDao.insertMember(
-            HomeMemberEntity(
-                hogar_id = localHomeId,
-                usuario_id = createdBy,
-                rol = "admin"
-            )
-        ).toInt()
-
-        val privs = ensureStandardPrivileges()
-        for (priv in privs) {
-            privilegeDao.insertMemberPrivilege(MemberPrivilegeEntity(memberId, priv.id))
-        }
-
-        val json = JSONObject().apply {
-            put("nombre", name)
-            put("tipo_hogar", tipo)
-        }.toString()
-        restSyncManager.enqueueOfflineAction("hogares", "POST", json, "CREAR_HOGAR", "Crear hogar $name")
-
-        ApiClient.saveHomeId(localHomeId)
-        return@withContext localHomeId.toLong()
     }
 
     suspend fun joinHomeByInviteCode(inviteCode: String, userId: Int): Boolean = withContext(Dispatchers.IO) {
-        val cleanCode = inviteCode.trim().uppercase(Locale.getDefault())
-
-        // 1. Try online join
-        val token = ApiClient.getAuthToken()
-        if (!token.isNullOrBlank()) {
-            try {
-                val resp = ApiClient.service.joinHome(JoinHomeRequest(codigo = cleanCode))
-                if (resp.isSuccessful && resp.body()?.data != null) {
-                    val serverHomeId = resp.body()!!.data.hogar_id
-                    SyncLogCollector.s("WeHabita:Repo", "Unido al hogar #$serverHomeId exitosamente vía REST")
-                    // Sincronizar datos del nuevo hogar
-                    restSyncManager.syncWithServer(serverHomeId)
-                    ApiClient.saveHomeId(serverHomeId)
-                    return@withContext true
-                }
-            } catch (e: Exception) {
-                SyncLogCollector.w("WeHabita:Repo", "Fallo al unirse online al hogar: ${e.message}")
+        try {
+            val resp = ApiClient.service.joinHome(JoinHomeRequest(codigo = inviteCode.trim()))
+            if (resp.isSuccessful && resp.body()?.data != null) {
+                val hogarId = resp.body()!!.data.hogar_id
+                ApiClient.saveHomeId(hogarId)
+                fetchHomes()
+                fetchAllHomeData(hogarId)
+                SyncLogCollector.s(TAG, "Unido al hogar #$hogarId exitosamente.")
+                return@withContext true
             }
+            false
+        } catch (e: Exception) {
+            SyncLogCollector.e(TAG, "Error al unirse al hogar con código: ${e.message}", e)
+            false
         }
-
-        // 2. Offline fallback
-        val home = homeDao.getHomeByInviteCode(cleanCode)
-        val json = JSONObject().apply { put("codigo", cleanCode) }.toString()
-        restSyncManager.enqueueOfflineAction("invitaciones/unirse", "POST", json, "UNIRSE_HOGAR", "Unirse al hogar con código $cleanCode")
-
-        if (home != null) {
-            val existing = homeMemberDao.getMember(home.id, userId)
-            if (existing != null) return@withContext true
-
-            val memberId = homeMemberDao.insertMember(
-                HomeMemberEntity(
-                    hogar_id = home.id,
-                    usuario_id = userId,
-                    rol = "miembro"
-                )
-            ).toInt()
-
-            val privs = ensureStandardPrivileges()
-            val defaultPrivNames = listOf("marcar_tareas", "crear_problemas", "crear_necesidades")
-            privs.filter { it.nombre in defaultPrivNames }.forEach { priv ->
-                privilegeDao.insertMemberPrivilege(MemberPrivilegeEntity(memberId, priv.id))
-            }
-            ApiClient.saveHomeId(home.id)
-            return@withContext true
-        }
-
-        return@withContext false
     }
 
-    // --- Members & Privileges ---
-    fun getMembersWithUserForHome(homeId: Int): Flow<List<MemberWithUser>> =
-        homeMemberDao.getMembersWithUserForHome(homeId)
+    suspend fun deleteHome(homeId: Int): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val resp = ApiClient.service.deleteHome(homeId)
+            if (resp.isSuccessful) {
+                _homes.value = _homes.value.filter { it.id != homeId }
+                SyncLogCollector.s(TAG, "Hogar #$homeId eliminado.")
+                fetchHomes()
+                return@withContext true
+            }
+            false
+        } catch (e: Exception) {
+            SyncLogCollector.e(TAG, "Error al eliminar hogar: ${e.message}", e)
+            false
+        }
+    }
 
-    fun getAllPrivileges(): Flow<List<PrivilegeEntity>> = privilegeDao.getAllPrivileges()
+    suspend fun leaveHome(homeId: Int): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val resp = ApiClient.service.leaveHome(homeId)
+            if (resp.isSuccessful) {
+                _homes.value = _homes.value.filter { it.id != homeId }
+                fetchHomes()
+                return@withContext true
+            }
+            false
+        } catch (e: Exception) {
+            SyncLogCollector.e(TAG, "Error al salir del hogar: ${e.message}", e)
+            false
+        }
+    }
+
+    private fun upsertHomeInMemory(home: HomeEntity) {
+        val current = _homes.value.toMutableList()
+        val index = current.indexOfFirst { it.id == home.id }
+        if (index >= 0) {
+            current[index] = home
+        } else {
+            current.add(home)
+        }
+        _homes.value = current
+    }
+
+    // ==========================================
+    // Members & Privileges
+    // ==========================================
+    fun getMembersWithUserForHome(homeId: Int): Flow<List<MemberWithUser>> = _members.asStateFlow()
+
+    fun getAllPrivileges(): Flow<List<PrivilegeEntity>> = _privileges.asStateFlow()
 
     fun getPrivilegesForMember(memberId: Int): Flow<List<PrivilegeEntity>> =
-        privilegeDao.getPrivilegesForMember(memberId)
+        _memberPrivileges.map { it[memberId] ?: emptyList() }
 
-    suspend fun setMemberPrivileges(memberId: Int, privilegeIds: List<Int>) = withContext(Dispatchers.IO) {
-        privilegeDao.clearMemberPrivileges(memberId)
-        for (pId in privilegeIds) {
-            privilegeDao.insertMemberPrivilege(MemberPrivilegeEntity(memberId, pId))
+    suspend fun updateMemberRole(member: HomeMemberEntity, newRole: String) = withContext(Dispatchers.IO) {
+        try {
+            val resp = ApiClient.service.updateMemberRole(member.hogar_id, member.id, UpdateMemberRoleRequest(rol = newRole))
+            if (resp.isSuccessful) {
+                fetchMembers(member.hogar_id)
+                SyncLogCollector.s(TAG, "Rol de miembro #${member.id} actualizado a $newRole")
+            }
+        } catch (e: Exception) {
+            SyncLogCollector.e(TAG, "Error actualizando rol: ${e.message}", e)
         }
     }
 
-    suspend fun updateMemberRole(member: HomeMemberEntity, newRole: String) = withContext(Dispatchers.IO) {
-        homeMemberDao.updateMember(member.copy(rol = newRole))
+    suspend fun updateMemberPrivileges(homeId: Int, memberId: Int, privileges: List<String>) = withContext(Dispatchers.IO) {
         try {
-            val resp = ApiClient.service.updateMemberRole(
-                homeId = member.hogar_id,
-                memberId = member.id,
-                request = UpdateMemberRoleRequest(rol = newRole)
+            val resp = ApiClient.service.updateMemberPrivileges(
+                homeId,
+                memberId,
+                UpdateMemberPrivilegesRequest(privilegios = privileges)
             )
-            if (!resp.isSuccessful) {
-                val json = JSONObject().apply { put("rol", newRole) }.toString()
-                restSyncManager.enqueueOfflineAction(
-                    "hogares/${member.hogar_id}/miembros/${member.id}/rol",
-                    "PUT",
-                    json,
-                    "ACTUALIZAR_ROL",
-                    "Actualizar rol de miembro a $newRole"
-                )
+            if (resp.isSuccessful) {
+                fetchMembers(homeId)
+                SyncLogCollector.s(TAG, "Privilegios de miembro #$memberId actualizados: $privileges")
             }
         } catch (e: Exception) {
-            val json = JSONObject().apply { put("rol", newRole) }.toString()
-            restSyncManager.enqueueOfflineAction(
-                "hogares/${member.hogar_id}/miembros/${member.id}/rol",
-                "PUT",
-                json,
-                "ACTUALIZAR_ROL",
-                "Actualizar rol de miembro a $newRole"
-            )
+            SyncLogCollector.e(TAG, "Error actualizando privilegios: ${e.message}", e)
         }
     }
 
     suspend fun removeMember(homeId: Int, userId: Int) = withContext(Dispatchers.IO) {
-        val member = homeMemberDao.getMember(homeId, userId)
-        homeMemberDao.removeMember(homeId, userId)
-        if (member != null) {
-            try {
-                val resp = ApiClient.service.removeMember(homeId, member.id)
-                if (!resp.isSuccessful) {
-                    restSyncManager.enqueueOfflineAction(
-                        "hogares/$homeId/miembros/${member.id}",
-                        "DELETE",
-                        null,
-                        "ELIMINAR_MIEMBRO",
-                        "Eliminar miembro de hogar"
-                    )
-                }
-            } catch (e: Exception) {
-                restSyncManager.enqueueOfflineAction(
-                    "hogares/$homeId/miembros/${member.id}",
-                    "DELETE",
-                    null,
-                    "ELIMINAR_MIEMBRO",
-                    "Eliminar miembro de hogar"
-                )
-            }
-        }
-    }
-
-    // --- Invitations ---
-    fun getInvitationsForHome(homeId: Int): Flow<List<InvitationEntity>> =
-        invitationDao.getInvitationsForHome(homeId)
-
-    suspend fun createInvitation(homeId: Int, createdBy: Int, email: String?, userCode: String?): Long = withContext(Dispatchers.IO) {
-        var destUser: UserEntity? = null
-        if (!userCode.isNullOrBlank()) {
-            destUser = userDao.getUserByCode(userCode.trim())
-        }
-        val code = "INV-" + UUID.randomUUID().toString().take(6).uppercase(Locale.getDefault())
-        val invitation = InvitationEntity(
-            hogar_id = homeId,
-            codigo = code,
-            email_destino = email?.ifBlank { null } ?: destUser?.email,
-            usuario_destino_id = destUser?.id,
-            creado_por = createdBy
-        )
-        val invId = invitationDao.insertInvitation(invitation)
-
         try {
-            val resp = ApiClient.service.createInvitation(
-                homeId = homeId,
-                request = CreateInvitationRequest(
-                    email_destino = email,
-                    codigo_usuario_destino = userCode
-                )
-            )
-            if (!resp.isSuccessful) {
-                val json = JSONObject().apply {
-                    put("email_destino", email)
-                    put("codigo_usuario_destino", userCode)
-                }.toString()
-                restSyncManager.enqueueOfflineAction(
-                    "hogares/$homeId/invitaciones",
-                    "POST",
-                    json,
-                    "CREAR_INVITACION",
-                    "Crear invitación para $email"
-                )
+            val member = _members.value.find { it.user.id == userId }
+            if (member != null) {
+                val resp = ApiClient.service.removeMember(homeId, member.member.id)
+                if (resp.isSuccessful) {
+                    fetchMembers(homeId)
+                    SyncLogCollector.s(TAG, "Miembro $userId expulsado del hogar $homeId")
+                }
             }
         } catch (e: Exception) {
-            val json = JSONObject().apply {
-                put("email_destino", email)
-                put("codigo_usuario_destino", userCode)
-            }.toString()
-            restSyncManager.enqueueOfflineAction(
-                "hogares/$homeId/invitaciones",
-                "POST",
-                json,
-                "CREAR_INVITACION",
-                "Crear invitación para $email"
-            )
+            SyncLogCollector.e(TAG, "Error al remover miembro: ${e.message}", e)
         }
-        return@withContext invId
     }
 
-    // --- Tasks & Schedules ---
-    fun getTasksForHome(homeId: Int): Flow<List<TaskEntity>> = taskDao.getTasksForHome(homeId)
+    // ==========================================
+    // Invitations
+    // ==========================================
+    fun getInvitationsForHome(homeId: Int): Flow<List<InvitationEntity>> = _invitations.asStateFlow()
+
+    suspend fun createInvitation(homeId: Int, createdBy: Int, email: String?, userCode: String?): Long = withContext(Dispatchers.IO) {
+        try {
+            val resp = ApiClient.service.createInvitation(
+                homeId,
+                CreateInvitationRequest(
+                    email_destino = email?.ifBlank { null },
+                    codigo_usuario_destino = userCode?.ifBlank { null }
+                )
+            )
+            if (resp.isSuccessful) {
+                fetchInvitations(homeId)
+                SyncLogCollector.s(TAG, "Invitación creada en el servidor para el hogar #$homeId")
+                return@withContext 1L
+            }
+        } catch (e: Exception) {
+            SyncLogCollector.e(TAG, "Error al crear invitación: ${e.message}", e)
+        }
+        0L
+    }
+
+    // ==========================================
+    // Tasks & Occurrences
+    // ==========================================
+    fun getTasksForHome(homeId: Int): Flow<List<TaskEntity>> = _tasks.asStateFlow()
 
     fun getSchedulesForTask(taskId: Int): Flow<List<TaskScheduleEntity>> =
-        taskDao.getSchedulesForTask(taskId)
+        _taskSchedules.map { it[taskId] ?: emptyList() }
 
     fun getAssignmentsForTask(taskId: Int): Flow<List<TaskAssignmentEntity>> =
-        taskDao.getAssignmentsForTask(taskId)
+        _taskAssignments.map { it[taskId] ?: emptyList() }
+
+    fun getOccurrencesForHomeAndDate(homeId: Int, date: String): Flow<List<OccurrenceWithDetails>> =
+        _occurrences.map { list -> list.filter { it.occurrence.fecha == date } }
+
+    fun getAllOccurrencesForHome(homeId: Int): Flow<List<OccurrenceWithDetails>> =
+        _occurrences.asStateFlow()
 
     suspend fun createTask(
         homeId: Int,
         createdBy: Int,
         titulo: String,
         descripcion: String?,
-        tipo: String, // 'unica' | 'fija'
-        fechaInicio: String,
-        fechaFin: String?,
-        horarios: List<Pair<String, String?>>,
-        assignedUserIds: List<Int>
-    ): Long = withContext(Dispatchers.IO) {
-        val schedulesDto = horarios.map { ScheduleDto(hora_inicio = it.first, hora_fin = it.second) }
-
-        // 1. Try online creation
-        try {
-            val resp = ApiClient.service.createTask(
-                homeId = homeId,
-                request = CreateTaskRequest(
-                    titulo = titulo,
-                    descripcion = descripcion,
-                    tipo = tipo,
-                    fecha_inicio = fechaInicio,
-                    fecha_fin = fechaFin,
-                    horarios = schedulesDto,
-                    asignados_ids = assignedUserIds
-                )
-            )
-            if (resp.isSuccessful && resp.body()?.data != null) {
-                val t = resp.body()!!.data
-                val serverTaskId = if (t.id > 0) t.id else (System.currentTimeMillis() % 1000000).toInt()
-                taskDao.insertTask(
-                    TaskEntity(
-                        id = serverTaskId,
-                        hogar_id = homeId,
-                        creado_por = createdBy,
-                        titulo = t.titulo.ifBlank { titulo },
-                        descripcion = t.descripcion ?: descripcion,
-                        tipo = t.tipo.ifBlank { tipo },
-                        fecha_inicio = t.fecha_inicio.ifBlank { fechaInicio },
-                        fecha_fin = t.fecha_fin ?: fechaFin,
-                        activa = t.activa
-                    )
-                )
-                
-                val schedulesToInsert = if (t.horarios.isNotEmpty()) {
-                    t.horarios.map { (it.id ?: 0) to (it.hora_inicio to it.hora_fin) }
-                } else if (horarios.isNotEmpty()) {
-                    horarios.map { 0 to it }
-                } else {
-                    listOf(0 to ("08:00" to null))
-                }
-
-                for ((sId, sched) in schedulesToInsert) {
-                    val (hIn, hOut) = sched
-                    taskDao.insertSchedule(
-                        TaskScheduleEntity(
-                            id = sId,
-                            tarea_id = serverTaskId,
-                            hora_inicio = hIn,
-                            hora_fin = hOut
-                        )
-                    )
-                    // Generate initial occurrence
-                    taskOccurrenceDao.insertOccurrence(
-                        TaskOccurrenceEntity(
-                            tarea_id = serverTaskId,
-                            fecha = fechaInicio,
-                            hora_inicio = hIn,
-                            hora_fin = hOut,
-                            completada = false
-                        )
-                    )
-                }
-
-                val assigneesToSave = if (t.asignados.isNotEmpty()) t.asignados.map { it.id } else assignedUserIds
-                for (uId in assigneesToSave) {
-                    taskDao.insertAssignment(TaskAssignmentEntity(tarea_id = serverTaskId, usuario_id = uId))
-                }
-                SyncLogCollector.s("WeHabita:Repo", "Tarea '$titulo' (#$serverTaskId) creada en el servidor y guardada en Room")
-                return@withContext serverTaskId.toLong()
-            }
-        } catch (e: Exception) {
-            SyncLogCollector.w("WeHabita:Repo", "Fallo online al crear tarea: ${e.message}")
-        }
-
-        // 2. Offline fallback
-        val task = TaskEntity(
-            hogar_id = homeId,
-            creado_por = createdBy,
-            titulo = titulo,
-            descripcion = descripcion,
-            tipo = tipo,
-            fecha_inicio = fechaInicio,
-            fecha_fin = fechaFin,
-            activa = true
-        )
-        val taskId = taskDao.insertTask(task).toInt()
-
-        for ((hInicio, hFin) in horarios) {
-            taskDao.insertSchedule(
-                TaskScheduleEntity(
-                    tarea_id = taskId,
-                    hora_inicio = hInicio,
-                    hora_fin = hFin
-                )
-            )
-            taskOccurrenceDao.insertOccurrence(
-                TaskOccurrenceEntity(
-                    tarea_id = taskId,
-                    fecha = fechaInicio,
-                    hora_inicio = hInicio,
-                    hora_fin = hFin,
-                    completada = false
-                )
-            )
-        }
-
-        for (userId in assignedUserIds) {
-            taskDao.insertAssignment(TaskAssignmentEntity(tarea_id = taskId, usuario_id = userId))
-        }
-
-        val json = JSONObject().apply {
-            put("titulo", titulo)
-            put("descripcion", descripcion)
-            put("tipo", tipo)
-            put("fecha_inicio", fechaInicio)
-            put("fecha_fin", fechaFin)
-            val hArr = JSONArray()
-            for ((hIn, hOut) in horarios) {
-                val hObj = JSONObject()
-                hObj.put("hora_inicio", hIn)
-                if (hOut != null) hObj.put("hora_fin", hOut)
-                hArr.put(hObj)
-            }
-            put("horarios", hArr)
-            val aArr = JSONArray()
-            for (uId in assignedUserIds) aArr.put(uId)
-            put("asignados_ids", aArr)
-        }.toString()
-        restSyncManager.enqueueOfflineAction(
-            "hogares/$homeId/tareas",
-            "POST",
-            json,
-            "CREAR_TAREA",
-            "Crear tarea $titulo"
-        )
-
-        return@withContext taskId.toLong()
-    }
-
-    suspend fun updateTask(
-        taskId: Int,
-        titulo: String,
-        descripcion: String?,
         tipo: String,
         fechaInicio: String,
         fechaFin: String?,
-        activa: Boolean = true
-    ) = withContext(Dispatchers.IO) {
-        val existing = taskDao.getTaskById(taskId) ?: return@withContext
-        val updated = existing.copy(
-            titulo = titulo,
-            descripcion = descripcion,
-            tipo = tipo,
-            fecha_inicio = fechaInicio,
-            fecha_fin = fechaFin,
-            activa = activa
-        )
-        taskDao.updateTask(updated)
-
+        horarios: List<Pair<String, String?>>,
+        asignadosIds: List<Int>
+    ): Long = withContext(Dispatchers.IO) {
         try {
-            val json = JSONObject().apply {
-                put("titulo", titulo)
-                put("descripcion", descripcion)
-                put("tipo", tipo)
-                put("fecha_inicio", fechaInicio)
-                put("fecha_fin", fechaFin)
-                put("activa", activa)
-            }.toString()
-            val resp = ApiClient.service.updateTask(
-                homeId = existing.hogar_id,
-                taskId = taskId,
-                request = UpdateTaskRequest(
-                    titulo = titulo,
-                    descripcion = descripcion,
-                    tipo = tipo,
-                    fecha_inicio = fechaInicio,
-                    fecha_fin = fechaFin
-                )
+            val request = CreateTaskRequest(
+                titulo = titulo,
+                descripcion = descripcion,
+                tipo = tipo,
+                fecha_inicio = fechaInicio,
+                fecha_fin = fechaFin,
+                horarios = horarios.map { ScheduleDto(hora_inicio = it.first, hora_fin = it.second) },
+                asignados_ids = asignadosIds
             )
-            if (!resp.isSuccessful) {
-                restSyncManager.enqueueOfflineAction(
-                    "hogares/${existing.hogar_id}/tareas/$taskId",
-                    "PATCH",
-                    json,
-                    "ACTUALIZAR_TAREA",
-                    "Actualizar tarea #$taskId"
-                )
+            val resp = ApiClient.service.createTask(homeId, request)
+            if (resp.isSuccessful && resp.body()?.data != null) {
+                val t = resp.body()!!.data
+                fetchTasks(homeId)
+                SyncLogCollector.s(TAG, "Tarea '${t.titulo}' creada en el servidor.")
+                return@withContext t.id.toLong()
             }
         } catch (e: Exception) {
-            val json = JSONObject().apply {
-                put("titulo", titulo)
-                put("descripcion", descripcion)
-                put("tipo", tipo)
-                put("fecha_inicio", fechaInicio)
-                put("fecha_fin", fechaFin)
-                put("activa", activa)
-            }.toString()
-            restSyncManager.enqueueOfflineAction(
-                "hogares/${existing.hogar_id}/tareas/$taskId",
-                "PATCH",
-                json,
-                "ACTUALIZAR_TAREA",
-                "Actualizar tarea #$taskId"
+            SyncLogCollector.e(TAG, "Error al crear tarea: ${e.message}", e)
+        }
+        0L
+    }
+
+    suspend fun updateTask(
+        task: TaskEntity,
+        horarios: List<Pair<String, String?>>,
+        asignadosIds: List<Int>
+    ) = withContext(Dispatchers.IO) {
+        try {
+            val resolvedHomeId = if (task.hogar_id > 0) task.hogar_id else ApiClient.getSavedHomeId() ?: _homes.value.firstOrNull()?.id ?: 0
+            val normalizedTask = if (task.hogar_id <= 0 && resolvedHomeId > 0) task.copy(hogar_id = resolvedHomeId) else task
+
+            // Actualización optimista en memoria
+            val currentTasks = _tasks.value.toMutableList()
+            val taskIndex = currentTasks.indexOfFirst { it.id == normalizedTask.id }
+            if (taskIndex >= 0) {
+                currentTasks[taskIndex] = normalizedTask
+            } else {
+                currentTasks.add(normalizedTask)
+            }
+            _tasks.value = currentTasks
+
+            val currentSchedules = _taskSchedules.value.toMutableMap()
+            currentSchedules[normalizedTask.id] = horarios.mapIndexed { idx, pair ->
+                TaskScheduleEntity(
+                    id = (normalizedTask.id * 1000 + idx + 1),
+                    tarea_id = normalizedTask.id,
+                    hora_inicio = pair.first,
+                    hora_fin = pair.second
+                )
+            }
+            _taskSchedules.value = currentSchedules
+
+            val currentAssignments = _taskAssignments.value.toMutableMap()
+            currentAssignments[normalizedTask.id] = asignadosIds.map {
+                TaskAssignmentEntity(tarea_id = normalizedTask.id, usuario_id = it)
+            }
+            _taskAssignments.value = currentAssignments
+
+            // Actualizar ocurrencias en memoria para hoy
+            val todayDate = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
+            if (normalizedTask.activa && (normalizedTask.tipo == "fija" || normalizedTask.fecha_inicio == todayDate)) {
+                val existingOccs = _occurrences.value.filter { it.occurrence.tarea_id != normalizedTask.id }.toMutableList()
+                horarios.forEachIndexed { idx, pair ->
+                    val synthId = (normalizedTask.id * 10000 + pair.first.hashCode()).let { if (it < 0) -it else it }
+                    existingOccs.add(
+                        OccurrenceWithDetails(
+                            occurrence = TaskOccurrenceEntity(
+                                id = synthId,
+                                tarea_id = normalizedTask.id,
+                                fecha = todayDate,
+                                hora_inicio = pair.first,
+                                hora_fin = pair.second,
+                                completada = false
+                            ),
+                            task = normalizedTask,
+                            completedByUser = null
+                        )
+                    )
+                }
+                _occurrences.value = existingOccs
+            }
+
+            val request = UpdateTaskRequest(
+                titulo = normalizedTask.titulo,
+                descripcion = normalizedTask.descripcion,
+                tipo = normalizedTask.tipo,
+                fecha_inicio = normalizedTask.fecha_inicio,
+                fecha_fin = normalizedTask.fecha_fin,
+                activa = normalizedTask.activa,
+                horarios = horarios.map { ScheduleDto(hora_inicio = it.first, hora_fin = it.second) },
+                asignados_ids = asignadosIds
             )
+
+            if (resolvedHomeId > 0) {
+                val resp = ApiClient.service.updateTask(resolvedHomeId, normalizedTask.id, request)
+                if (resp.isSuccessful) {
+                    fetchTasks(resolvedHomeId)
+                    SyncLogCollector.s(TAG, "Tarea #${normalizedTask.id} actualizada en servidor (Hogar: $resolvedHomeId).")
+                } else {
+                    SyncLogCollector.w(TAG, "Respuesta al actualizar tarea: ${resp.code()} ${resp.message()}")
+                    fetchTasks(resolvedHomeId)
+                }
+            }
+        } catch (e: Exception) {
+            SyncLogCollector.e(TAG, "Error actualizando tarea: ${e.message}", e)
+        }
+    }
+
+    suspend fun deleteTask(taskId: Int, homeId: Int? = null) = withContext(Dispatchers.IO) {
+        try {
+            val resolvedHomeId = homeId ?: _tasks.value.find { it.id == taskId }?.hogar_id ?: ApiClient.getSavedHomeId()
+            if (resolvedHomeId != null) {
+                val resp = ApiClient.service.deleteTask(resolvedHomeId, taskId)
+                if (resp.isSuccessful) {
+                    fetchTasks(resolvedHomeId)
+                    SyncLogCollector.s(TAG, "Tarea #$taskId eliminada.")
+                }
+            }
+        } catch (e: Exception) {
+            SyncLogCollector.e(TAG, "Error eliminando tarea: ${e.message}", e)
+        }
+    }
+
+    suspend fun addTaskSchedule(homeId: Int, taskId: Int, horaInicio: String, horaFin: String?) = withContext(Dispatchers.IO) {
+        try {
+            val resolvedHomeId = if (homeId > 0) homeId else _tasks.value.find { it.id == taskId }?.hogar_id ?: ApiClient.getSavedHomeId() ?: _homes.value.firstOrNull()?.id ?: 0
+            val currentMap = _taskSchedules.value.toMutableMap()
+            val list = (currentMap[taskId] ?: emptyList()).toMutableList()
+            val tempId = (System.currentTimeMillis() % 100000).toInt() + 1
+            val newEntity = TaskScheduleEntity(
+                id = tempId,
+                tarea_id = taskId,
+                hora_inicio = horaInicio,
+                hora_fin = horaFin
+            )
+            list.add(newEntity)
+            currentMap[taskId] = list
+            _taskSchedules.value = currentMap
+
+            // Añadir inmediatamente a ocurrencias si la tarea está activa
+            val parentTask = _tasks.value.find { it.id == taskId }
+            val todayDate = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
+            if (parentTask != null && parentTask.activa) {
+                val occList = _occurrences.value.toMutableList()
+                val alreadyExists = occList.any {
+                    it.occurrence.tarea_id == taskId &&
+                    it.occurrence.fecha == todayDate &&
+                    it.occurrence.hora_inicio.trim() == horaInicio.trim()
+                }
+                if (!alreadyExists) {
+                    occList.add(
+                        OccurrenceWithDetails(
+                            occurrence = TaskOccurrenceEntity(
+                                id = tempId * 100,
+                                tarea_id = taskId,
+                                fecha = todayDate,
+                                hora_inicio = horaInicio,
+                                hora_fin = horaFin,
+                                completada = false
+                            ),
+                            task = parentTask,
+                            completedByUser = null
+                        )
+                    )
+                    _occurrences.value = occList
+                }
+            }
+
+            if (resolvedHomeId > 0) {
+                var directSuccess = false
+                try {
+                    val resp = ApiClient.service.addTaskSchedule(
+                        resolvedHomeId,
+                        taskId,
+                        ScheduleDto(hora_inicio = horaInicio, hora_fin = horaFin)
+                    )
+                    directSuccess = resp.isSuccessful
+                } catch (e: Exception) {
+                    directSuccess = false
+                }
+
+                if (!directSuccess && parentTask != null) {
+                    // Sincronizamos mediante updateTask con la lista completa de horarios
+                    val allPairs = list.map { it.hora_inicio to it.hora_fin }
+                    val assignments = _taskAssignments.value[taskId]?.map { it.usuario_id } ?: emptyList()
+                    updateTask(parentTask.copy(hogar_id = resolvedHomeId), allPairs, assignments)
+                } else {
+                    fetchTasks(resolvedHomeId)
+                }
+            }
+
+            SyncLogCollector.s(TAG, "Horario $horaInicio ($horaFin) agregado a la tarea #$taskId")
+        } catch (e: Exception) {
+            SyncLogCollector.e(TAG, "Error agregando horario: ${e.message}", e)
+            if (homeId > 0) fetchTasks(homeId)
+        }
+    }
+
+    suspend fun deleteTaskSchedule(homeId: Int, taskId: Int, scheduleId: Int) = withContext(Dispatchers.IO) {
+        try {
+            val resolvedHomeId = if (homeId > 0) homeId else _tasks.value.find { it.id == taskId }?.hogar_id ?: ApiClient.getSavedHomeId() ?: _homes.value.firstOrNull()?.id ?: 0
+            val currentMap = _taskSchedules.value.toMutableMap()
+            val targetSchedule = currentMap[taskId]?.find { it.id == scheduleId }
+            
+            // Inmediatamente quitamos el horario de memoria para actualización instantánea de la UI
+            if (currentMap.containsKey(taskId)) {
+                currentMap[taskId] = currentMap[taskId]?.filter { it.id != scheduleId } ?: emptyList()
+                _taskSchedules.value = currentMap
+            }
+            if (targetSchedule != null) {
+                _occurrences.value = _occurrences.value.filter {
+                    !(it.occurrence.tarea_id == taskId && it.occurrence.hora_inicio.trim() == targetSchedule.hora_inicio.trim())
+                }
+            }
+
+            if (resolvedHomeId > 0) {
+                var directSuccess = false
+                try {
+                    val resp = ApiClient.service.deleteTaskSchedule(resolvedHomeId, taskId, scheduleId)
+                    directSuccess = resp.isSuccessful
+                    if (!directSuccess) {
+                        val respDirect = ApiClient.service.deleteTaskScheduleDirect(resolvedHomeId, scheduleId)
+                        directSuccess = respDirect.isSuccessful
+                    }
+                } catch (e: Exception) {
+                    directSuccess = false
+                }
+
+                // Sincronizar mediante updateTask con la lista restante
+                val parentTask = _tasks.value.find { it.id == taskId }
+                if (parentTask != null) {
+                    val remainingPairs = (currentMap[taskId] ?: emptyList()).map { it.hora_inicio to it.hora_fin }
+                    val assignments = _taskAssignments.value[taskId]?.map { it.usuario_id } ?: emptyList()
+                    updateTask(parentTask.copy(hogar_id = resolvedHomeId), remainingPairs, assignments)
+                } else {
+                    fetchTasks(resolvedHomeId)
+                }
+
+                SyncLogCollector.s(TAG, "Horario #$scheduleId de la tarea #$taskId eliminado exitosamente.")
+            }
+        } catch (e: Exception) {
+            SyncLogCollector.e(TAG, "Error eliminando horario: ${e.message}", e)
+            if (homeId > 0) fetchTasks(homeId)
+        }
+    }
+
+    suspend fun markOccurrence(occurrenceId: Int, completed: Boolean, userId: Int?, notes: String? = null, homeId: Int? = null) = withContext(Dispatchers.IO) {
+        try {
+            val resolvedHomeId = homeId ?: ApiClient.getSavedHomeId() ?: _homes.value.firstOrNull()?.id
+            if (resolvedHomeId != null) {
+                val resp = ApiClient.service.completeOccurrence(
+                    resolvedHomeId,
+                    occurrenceId,
+                    CompleteOccurrenceRequest(completada = completed, notas = notes)
+                )
+                if (resp.isSuccessful) {
+                    fetchTasks(resolvedHomeId)
+                    SyncLogCollector.s(TAG, "Ocurrencia #$occurrenceId marcada como completada=$completed")
+                }
+            }
+        } catch (e: Exception) {
+            SyncLogCollector.e(TAG, "Error completando ocurrencia: ${e.message}", e)
         }
     }
 
     suspend fun completeTaskDirectly(taskId: Int, completed: Boolean, userId: Int?) = withContext(Dispatchers.IO) {
-        val todayStr = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
-        val occurrences = taskOccurrenceDao.getOccurrencesForTask(taskId)
-        val todayOcc = occurrences.find { it.fecha == todayStr }
-        if (todayOcc != null) {
-            markOccurrence(todayOcc.id, completed, userId, "Completada directamente desde la lista de tareas")
-        } else {
-            val newOccId = taskOccurrenceDao.insertOccurrence(
-                TaskOccurrenceEntity(
-                    tarea_id = taskId,
-                    fecha = todayStr,
-                    hora_inicio = "08:00",
-                    completada = completed,
-                    completada_por = if (completed) userId else null,
-                    fecha_completada = if (completed) System.currentTimeMillis() else null,
-                    notas = "Completada directamente"
-                )
-            ).toInt()
-            if (completed) {
-                markOccurrence(newOccId, true, userId, "Completada directamente")
-            }
+        val today = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
+        val matchingOcc = _occurrences.value.find { it.occurrence.tarea_id == taskId && it.occurrence.fecha == today }
+        if (matchingOcc != null) {
+            markOccurrence(matchingOcc.occurrence.id, completed, userId)
         }
     }
 
-    suspend fun deleteTask(taskId: Int) = withContext(Dispatchers.IO) {
-        val task = taskDao.getTaskById(taskId)
-        taskOccurrenceDao.deleteOccurrencesForTask(taskId)
-        taskDao.deleteTask(taskId)
-        if (task != null) {
-            try {
-                val resp = ApiClient.service.deleteTask(task.hogar_id, taskId)
-                if (!resp.isSuccessful) {
-                    restSyncManager.enqueueOfflineAction(
-                        "hogares/${task.hogar_id}/tareas/$taskId",
-                        "DELETE",
-                        null,
-                        "ELIMINAR_TAREA",
-                        "Eliminar tarea #${taskId}"
-                    )
-                }
-            } catch (e: Exception) {
-                restSyncManager.enqueueOfflineAction(
-                    "hogares/${task.hogar_id}/tareas/$taskId",
-                    "DELETE",
-                    null,
-                    "ELIMINAR_TAREA",
-                    "Eliminar tarea #${taskId}"
-                )
-            }
-        }
-    }
-
-    // --- Occurrences ---
-    fun getOccurrencesForHomeAndDate(homeId: Int, date: String): Flow<List<OccurrenceWithDetails>> =
-        taskOccurrenceDao.getOccurrencesForHomeAndDate(homeId, date)
-
-    fun getAllOccurrencesForHome(homeId: Int): Flow<List<OccurrenceWithDetails>> =
-        taskOccurrenceDao.getAllOccurrencesForHome(homeId)
-
-    suspend fun markOccurrence(occurrenceId: Int, completed: Boolean, userId: Int?, notes: String?) = withContext(Dispatchers.IO) {
-        taskOccurrenceDao.markOccurrence(
-            occurrenceId = occurrenceId,
-            completed = completed,
-            completedBy = if (completed) userId else null,
-            completedAt = if (completed) System.currentTimeMillis() else null,
-            notes = notes
-        )
-
-        try {
-            val taskOcc = taskOccurrenceDao.getAllOccurrencesList().find { it.id == occurrenceId }
-            val task = taskOcc?.let { taskDao.getTaskById(it.tarea_id) }
-            val homeId = task?.hogar_id ?: ApiClient.getSavedHomeId() ?: 1
-
-            val resp = ApiClient.service.completeOccurrence(
-                homeId = homeId,
-                occurrenceId = occurrenceId,
-                request = CompleteOccurrenceRequest(completada = completed, notas = notes)
-            )
-            if (!resp.isSuccessful) {
-                val json = JSONObject().apply {
-                    put("completada", completed)
-                    if (notes != null) put("notas", notes)
-                }.toString()
-                restSyncManager.enqueueOfflineAction(
-                    "hogares/$homeId/tareas-ocurrencias/$occurrenceId/completar",
-                    "PATCH",
-                    json,
-                    "COMPLETAR_OCURRENCIA",
-                    "Marcar ocurrencia #$occurrenceId como ${if (completed) "completada" else "pendiente"}"
-                )
-            }
-        } catch (e: Exception) {
-            val json = JSONObject().apply {
-                put("completada", completed)
-                if (notes != null) put("notas", notes)
-            }.toString()
-            val hId = ApiClient.getSavedHomeId() ?: 1
-            restSyncManager.enqueueOfflineAction(
-                "hogares/$hId/tareas-ocurrencias/$occurrenceId/completar",
-                "PATCH",
-                json,
-                "COMPLETAR_OCURRENCIA",
-                "Marcar ocurrencia #$occurrenceId como ${if (completed) "completada" else "pendiente"}"
-            )
-        }
-    }
-
-    // --- Penalties ---
-    fun getPenaltiesForHome(homeId: Int): Flow<List<PenaltyEntity>> =
-        penaltyDao.getPenaltiesForHome(homeId)
+    // ==========================================
+    // Penalties
+    // ==========================================
+    fun getPenaltiesForHome(homeId: Int): Flow<List<PenaltyEntity>> = _penalties.asStateFlow()
 
     fun getAssignedUsersForPenalty(penaltyId: Int): Flow<List<Int>> =
-        penaltyDao.getAssignedUserIds(penaltyId)
+        _penaltyUsers.map { it[penaltyId] ?: emptyList() }
 
     suspend fun createPenalty(
         homeId: Int,
         createdBy: Int,
         titulo: String,
-        motivo: String,
+        descripcionMotivo: String,
         penalizacion: String,
         fechaInicio: String,
         fechaFin: String?,
-        assignedUserIds: List<Int>
+        usuariosIds: List<Int>
     ): Long = withContext(Dispatchers.IO) {
-        // 1. Try online
         try {
-            val resp = ApiClient.service.createPenalty(
-                homeId = homeId,
-                request = CreatePenaltyRequest(
-                    titulo = titulo,
-                    descripcion_motivo = motivo,
-                    penalizacion = penalizacion,
-                    fecha_inicio = fechaInicio,
-                    fecha_fin = fechaFin,
-                    usuarios_ids = assignedUserIds
-                )
+            val req = CreatePenaltyRequest(
+                titulo = titulo,
+                descripcion_motivo = descripcionMotivo,
+                penalizacion = penalizacion,
+                fecha_inicio = fechaInicio,
+                fecha_fin = fechaFin,
+                usuarios_ids = usuariosIds
             )
+            val resp = ApiClient.service.createPenalty(homeId, req)
             if (resp.isSuccessful && resp.body()?.data != null) {
-                val p = resp.body()!!.data
-                val serverPenaltyId = if (p.id > 0) p.id else (System.currentTimeMillis() % 1000000).toInt()
-                penaltyDao.insertPenalty(
-                    PenaltyEntity(
-                        id = serverPenaltyId,
-                        hogar_id = homeId,
-                        creado_por = createdBy,
-                        titulo = p.titulo.ifBlank { titulo },
-                        descripcion_motivo = p.descripcion_motivo.ifBlank { motivo },
-                        penalizacion = p.penalizacion.ifBlank { penalizacion },
-                        fecha_inicio = p.fecha_inicio.ifBlank { fechaInicio },
-                        fecha_fin = p.fecha_fin ?: fechaFin,
-                        estado = p.estado.ifBlank { "activa" }
-                    )
-                )
-                val uIdsToSave = if (p.usuarios_penalizados.isNotEmpty()) p.usuarios_penalizados.map { it.id } else assignedUserIds
-                for (uId in uIdsToSave) {
-                    penaltyDao.insertPenaltyUser(PenaltyUserEntity(penalizacion_id = serverPenaltyId, usuario_id = uId))
-                }
-                SyncLogCollector.s("WeHabita:Repo", "Penalización '$titulo' (#$serverPenaltyId) creada en el servidor y guardada en Room")
-                return@withContext serverPenaltyId.toLong()
+                fetchPenalties(homeId)
+                SyncLogCollector.s(TAG, "Penalización creada en el servidor.")
+                return@withContext resp.body()!!.data.id.toLong()
             }
         } catch (e: Exception) {
-            SyncLogCollector.w("WeHabita:Repo", "Fallo online al crear penalización: ${e.message}")
+            SyncLogCollector.e(TAG, "Error creando penalización: ${e.message}", e)
         }
-
-        // 2. Offline fallback
-        val penalty = PenaltyEntity(
-            hogar_id = homeId,
-            creado_por = createdBy,
-            titulo = titulo,
-            descripcion_motivo = motivo,
-            penalizacion = penalizacion,
-            fecha_inicio = fechaInicio,
-            fecha_fin = fechaFin,
-            estado = "activa"
-        )
-        val pId = penaltyDao.insertPenalty(penalty).toInt()
-        for (uId in assignedUserIds) {
-            penaltyDao.insertPenaltyUser(PenaltyUserEntity(penalizacion_id = pId, usuario_id = uId))
-        }
-
-        val json = JSONObject().apply {
-            put("titulo", titulo)
-            put("descripcion_motivo", motivo)
-            put("penalizacion", penalizacion)
-            put("fecha_inicio", fechaInicio)
-            put("fecha_fin", fechaFin)
-            val arr = JSONArray()
-            for (u in assignedUserIds) arr.put(u)
-            put("usuarios_ids", arr)
-        }.toString()
-        restSyncManager.enqueueOfflineAction(
-            "hogares/$homeId/penalizaciones",
-            "POST",
-            json,
-            "CREAR_PENALIZACION",
-            "Crear penalización $titulo"
-        )
-
-        return@withContext pId.toLong()
+        0L
     }
 
     suspend fun updatePenaltyStatus(penalty: PenaltyEntity, newStatus: String) = withContext(Dispatchers.IO) {
-        penaltyDao.updatePenalty(penalty.copy(estado = newStatus))
         try {
-            val resp = ApiClient.service.updatePenaltyStatus(
-                homeId = penalty.hogar_id,
-                penaltyId = penalty.id,
-                request = UpdatePenaltyStatusRequest(estado = newStatus)
-            )
-            if (!resp.isSuccessful) {
-                val json = JSONObject().apply { put("estado", newStatus) }.toString()
-                restSyncManager.enqueueOfflineAction(
-                    "hogares/${penalty.hogar_id}/penalizaciones/${penalty.id}/estado",
-                    "PATCH",
-                    json,
-                    "ACTUALIZAR_ESTADO_PENALIZACION",
-                    "Cambiar estado de penalización #${penalty.id} a $newStatus"
-                )
+            val resp = ApiClient.service.updatePenaltyStatus(penalty.hogar_id, penalty.id, UpdatePenaltyStatusRequest(estado = newStatus))
+            if (resp.isSuccessful) {
+                fetchPenalties(penalty.hogar_id)
+                SyncLogCollector.s(TAG, "Estado de penalización #${penalty.id} actualizado a $newStatus")
             }
         } catch (e: Exception) {
-            val json = JSONObject().apply { put("estado", newStatus) }.toString()
-            restSyncManager.enqueueOfflineAction(
-                "hogares/${penalty.hogar_id}/penalizaciones/${penalty.id}/estado",
-                "PATCH",
-                json,
-                "ACTUALIZAR_ESTADO_PENALIZACION",
-                "Cambiar estado de penalización #${penalty.id} a $newStatus"
-            )
+            SyncLogCollector.e(TAG, "Error actualizando estado de penalización: ${e.message}", e)
         }
     }
 
-    // --- Problems & Conflicts ---
-    fun getProblemsForHome(homeId: Int): Flow<List<ProblemEntity>> =
-        problemDao.getProblemsForHome(homeId)
+    suspend fun deletePenalty(penaltyId: Int, homeId: Int? = null) = withContext(Dispatchers.IO) {
+        try {
+            val resolvedHomeId = homeId ?: _penalties.value.find { it.id == penaltyId }?.hogar_id ?: ApiClient.getSavedHomeId()
+            if (resolvedHomeId != null) {
+                val resp = ApiClient.service.deletePenalty(resolvedHomeId, penaltyId)
+                if (resp.isSuccessful) {
+                    fetchPenalties(resolvedHomeId)
+                }
+            }
+        } catch (e: Exception) {
+            SyncLogCollector.e(TAG, "Error eliminando penalización: ${e.message}", e)
+        }
+    }
+
+    // ==========================================
+    // Problems / Conflicts
+    // ==========================================
+    fun getProblemsForHome(homeId: Int): Flow<List<ProblemEntity>> = _problems.asStateFlow()
 
     fun getInvolvedUsersForProblem(problemId: Int): Flow<List<Int>> =
-        problemDao.getInvolvedUserIds(problemId)
+        _problemUsers.map { it[problemId] ?: emptyList() }
 
     fun getPointsOfViewForProblem(problemId: Int): Flow<List<ProblemPointOfViewEntity>> =
-        problemDao.getPointsOfViewForProblem(problemId)
+        _problemPoints.map { it[problemId] ?: emptyList() }
 
     suspend fun createProblem(
         homeId: Int,
         createdBy: Int,
         titulo: String,
         descripcion: String,
-        involvedUserIds: List<Int>
+        usuariosInvolucradosIds: List<Int>
     ): Long = withContext(Dispatchers.IO) {
-        // 1. Try online
         try {
-            val resp = ApiClient.service.createProblem(
-                homeId = homeId,
-                request = CreateProblemRequest(
-                    titulo = titulo,
-                    descripcion = descripcion,
-                    usuarios_involucrados_ids = involvedUserIds
-                )
+            val req = CreateProblemRequest(
+                titulo = titulo,
+                descripcion = descripcion,
+                usuarios_involucrados_ids = usuariosInvolucradosIds
             )
+            val resp = ApiClient.service.createProblem(homeId, req)
             if (resp.isSuccessful && resp.body()?.data != null) {
-                val pr = resp.body()!!.data
-                val serverProblemId = if (pr.id > 0) pr.id else (System.currentTimeMillis() % 1000000).toInt()
-                problemDao.insertProblem(
-                    ProblemEntity(
-                        id = serverProblemId,
-                        hogar_id = homeId,
-                        creado_por = createdBy,
-                        titulo = pr.titulo.ifBlank { titulo },
-                        descripcion = pr.descripcion.ifBlank { descripcion },
-                        hablado = pr.hablado,
-                        solucionado = pr.solucionado,
-                        acuerdo = pr.acuerdo
-                    )
-                )
-                val uIdsToSave = if (pr.usuarios_involucrados.isNotEmpty()) pr.usuarios_involucrados.map { it.id } else involvedUserIds
-                for (uId in uIdsToSave) {
-                    problemDao.insertProblemUser(ProblemUserEntity(problema_id = serverProblemId, usuario_id = uId))
-                }
-                SyncLogCollector.s("WeHabita:Repo", "Problema/Acuerdo '$titulo' (#$serverProblemId) creado en el servidor y guardado en Room")
-                return@withContext serverProblemId.toLong()
+                fetchProblems(homeId)
+                SyncLogCollector.s(TAG, "Problema creado en el servidor.")
+                return@withContext resp.body()!!.data.id.toLong()
             }
         } catch (e: Exception) {
-            SyncLogCollector.w("WeHabita:Repo", "Fallo online al crear problema: ${e.message}")
+            SyncLogCollector.e(TAG, "Error creando problema: ${e.message}", e)
         }
-
-        // 2. Offline fallback
-        val problem = ProblemEntity(
-            hogar_id = homeId,
-            creado_por = createdBy,
-            titulo = titulo,
-            descripcion = descripcion,
-            hablado = false,
-            solucionado = false
-        )
-        val pId = problemDao.insertProblem(problem).toInt()
-        for (uId in involvedUserIds) {
-            problemDao.insertProblemUser(ProblemUserEntity(problema_id = pId, usuario_id = uId))
-        }
-
-        val json = JSONObject().apply {
-            put("titulo", titulo)
-            put("descripcion", descripcion)
-            val arr = JSONArray()
-            for (u in involvedUserIds) arr.put(u)
-            put("usuarios_involucrados_ids", arr)
-        }.toString()
-        restSyncManager.enqueueOfflineAction(
-            "hogares/$homeId/problemas",
-            "POST",
-            json,
-            "CREAR_PROBLEMA",
-            "Crear problema $titulo"
-        )
-
-        return@withContext pId.toLong()
+        0L
     }
 
-    suspend fun addPointOfView(problemId: Int, userId: Int, contenido: String): Long = withContext(Dispatchers.IO) {
-        val povId = problemDao.insertPointOfView(
-            ProblemPointOfViewEntity(
-                problema_id = problemId,
-                usuario_id = userId,
-                contenido = contenido
-            )
-        )
-
+    suspend fun addPointOfView(problemId: Int, userId: Int, contenido: String, homeId: Int? = null): Long = withContext(Dispatchers.IO) {
         try {
-            val prob = problemDao.getProblemById(problemId)
-            val homeId = prob?.hogar_id ?: ApiClient.getSavedHomeId() ?: 1
-            val resp = ApiClient.service.addPointOfView(
-                homeId = homeId,
-                problemId = problemId,
-                request = AddPointOfViewRequest(contenido = contenido)
-            )
-            if (!resp.isSuccessful) {
-                val json = JSONObject().apply { put("contenido", contenido) }.toString()
-                restSyncManager.enqueueOfflineAction(
-                    "hogares/$homeId/problemas/$problemId/puntos-vista",
-                    "POST",
-                    json,
-                    "AGREGAR_PUNTO_VISTA",
-                    "Agregar punto de vista al problema #$problemId"
-                )
+            val resolvedHomeId = homeId ?: _problems.value.find { it.id == problemId }?.hogar_id ?: ApiClient.getSavedHomeId()
+            if (resolvedHomeId != null) {
+                val resp = ApiClient.service.addPointOfView(resolvedHomeId, problemId, AddPointOfViewRequest(contenido = contenido))
+                if (resp.isSuccessful) {
+                    fetchProblems(resolvedHomeId)
+                    return@withContext 1L
+                }
             }
         } catch (e: Exception) {
-            val json = JSONObject().apply { put("contenido", contenido) }.toString()
-            val hId = ApiClient.getSavedHomeId() ?: 1
-            restSyncManager.enqueueOfflineAction(
-                "hogares/$hId/problemas/$problemId/puntos-vista",
-                "POST",
-                json,
-                "AGREGAR_PUNTO_VISTA",
-                "Agregar punto de vista al problema #$problemId"
-            )
+            SyncLogCollector.e(TAG, "Error agregando punto de vista: ${e.message}", e)
         }
-        return@withContext povId
+        0L
     }
 
-    suspend fun updateProblem(
-        problemId: Int,
-        titulo: String,
-        descripcion: String,
-        involvedUserIds: List<Int>? = null
-    ) = withContext(Dispatchers.IO) {
-        val existing = problemDao.getProblemById(problemId) ?: return@withContext
-        val updated = existing.copy(titulo = titulo, descripcion = descripcion)
-        problemDao.updateProblem(updated)
-
-        if (involvedUserIds != null) {
-            for (uId in involvedUserIds) {
-                problemDao.insertProblemUser(ProblemUserEntity(problema_id = problemId, usuario_id = uId))
+    suspend fun deletePointOfView(problemId: Int, povId: Int, homeId: Int? = null) = withContext(Dispatchers.IO) {
+        try {
+            val resolvedHomeId = homeId ?: _problems.value.find { it.id == problemId }?.hogar_id ?: ApiClient.getSavedHomeId()
+            if (resolvedHomeId != null) {
+                val resp = ApiClient.service.deletePointOfView(resolvedHomeId, problemId, povId)
+                if (resp.isSuccessful) {
+                    fetchProblems(resolvedHomeId)
+                }
             }
+        } catch (e: Exception) {
+            SyncLogCollector.e(TAG, "Error eliminando punto de vista: ${e.message}", e)
         }
+    }
 
+    suspend fun updateProblem(problem: ProblemEntity) = withContext(Dispatchers.IO) {
         try {
             val resp = ApiClient.service.updateProblem(
-                homeId = existing.hogar_id,
-                problemId = problemId,
-                request = UpdateProblemRequest(
-                    titulo = titulo,
-                    descripcion = descripcion,
-                    usuarios_involucrados_ids = involvedUserIds
-                )
+                problem.hogar_id,
+                problem.id,
+                UpdateProblemRequest(titulo = problem.titulo, descripcion = problem.descripcion)
             )
-            if (!resp.isSuccessful) {
-                val json = JSONObject().apply {
-                    put("titulo", titulo)
-                    put("descripcion", descripcion)
-                }.toString()
-                restSyncManager.enqueueOfflineAction(
-                    "hogares/${existing.hogar_id}/problemas/$problemId",
-                    "PATCH",
-                    json,
-                    "ACTUALIZAR_PROBLEMA",
-                    "Actualizar problema #$problemId"
-                )
+            if (resp.isSuccessful) {
+                fetchProblems(problem.hogar_id)
             }
         } catch (e: Exception) {
-            val json = JSONObject().apply {
-                put("titulo", titulo)
-                put("descripcion", descripcion)
-            }.toString()
-            restSyncManager.enqueueOfflineAction(
-                "hogares/${existing.hogar_id}/problemas/$problemId",
-                "PATCH",
-                json,
-                "ACTUALIZAR_PROBLEMA",
-                "Actualizar problema #$problemId"
-            )
-        }
-    }
-
-    suspend fun deleteProblem(problemId: Int) = withContext(Dispatchers.IO) {
-        val prob = problemDao.getProblemById(problemId)
-        problemDao.deleteProblem(problemId)
-        if (prob != null) {
-            try {
-                val resp = ApiClient.service.deleteProblem(prob.hogar_id, problemId)
-                if (!resp.isSuccessful) {
-                    restSyncManager.enqueueOfflineAction(
-                        "hogares/${prob.hogar_id}/problemas/$problemId",
-                        "DELETE",
-                        null,
-                        "ELIMINAR_PROBLEMA",
-                        "Eliminar problema #$problemId"
-                    )
-                }
-            } catch (e: Exception) {
-                restSyncManager.enqueueOfflineAction(
-                    "hogares/${prob.hogar_id}/problemas/$problemId",
-                    "DELETE",
-                    null,
-                    "ELIMINAR_PROBLEMA",
-                    "Eliminar problema #$problemId"
-                )
-            }
-        }
-    }
-
-    suspend fun deletePointOfView(problemId: Int, povId: Int) = withContext(Dispatchers.IO) {
-        problemDao.deletePointOfView(povId)
-        val prob = problemDao.getProblemById(problemId)
-        val homeId = prob?.hogar_id ?: ApiClient.getSavedHomeId() ?: 1
-        try {
-            val resp = ApiClient.service.deletePointOfView(homeId, problemId, povId)
-            if (!resp.isSuccessful) {
-                restSyncManager.enqueueOfflineAction(
-                    "hogares/$homeId/problemas/$problemId/puntos-vista/$povId",
-                    "DELETE",
-                    null,
-                    "ELIMINAR_PUNTO_VISTA",
-                    "Eliminar punto de vista #$povId"
-                )
-            }
-        } catch (e: Exception) {
-            restSyncManager.enqueueOfflineAction(
-                "hogares/$homeId/problemas/$problemId/puntos-vista/$povId",
-                "DELETE",
-                null,
-                "ELIMINAR_PUNTO_VISTA",
-                "Eliminar punto de vista #$povId"
-            )
-        }
-    }
-
-    suspend fun deletePenalty(penaltyId: Int) = withContext(Dispatchers.IO) {
-        val pen = penaltyDao.getPenaltyById(penaltyId)
-        penaltyDao.deletePenalty(penaltyId)
-        if (pen != null) {
-            try {
-                val resp = ApiClient.service.deletePenalty(pen.hogar_id, penaltyId)
-                if (!resp.isSuccessful) {
-                    restSyncManager.enqueueOfflineAction(
-                        "hogares/${pen.hogar_id}/penalizaciones/$penaltyId",
-                        "DELETE",
-                        null,
-                        "ELIMINAR_PENALIZACION",
-                        "Eliminar penalización #$penaltyId"
-                    )
-                }
-            } catch (e: Exception) {
-                restSyncManager.enqueueOfflineAction(
-                    "hogares/${pen.hogar_id}/penalizaciones/$penaltyId",
-                    "DELETE",
-                    null,
-                    "ELIMINAR_PENALIZACION",
-                    "Eliminar penalización #$penaltyId"
-                )
-            }
+            SyncLogCollector.e(TAG, "Error actualizando problema: ${e.message}", e)
         }
     }
 
     suspend fun updateProblemDetails(
-        problem: ProblemEntity,
+        problemId: Int,
+        homeId: Int,
+        titulo: String,
+        descripcion: String,
         hablado: Boolean,
         solucionado: Boolean,
-        acuerdo: String?
+        acuerdo: String?,
+        usuariosInvolucradosIds: List<Int>? = null
     ) = withContext(Dispatchers.IO) {
-        problemDao.updateProblem(
-            problem.copy(
-                hablado = hablado,
-                solucionado = solucionado,
-                acuerdo = acuerdo
-            )
-        )
-
         try {
-            val resp = ApiClient.service.updateProblemStatus(
-                homeId = problem.hogar_id,
-                problemId = problem.id,
-                request = UpdateProblemStatusRequest(
-                    hablado = hablado,
-                    solucionado = solucionado,
-                    acuerdo = acuerdo
-                )
+            ApiClient.service.updateProblem(
+                homeId,
+                problemId,
+                UpdateProblemRequest(titulo = titulo, descripcion = descripcion, usuarios_involucrados_ids = usuariosInvolucradosIds)
             )
-            if (!resp.isSuccessful) {
-                val json = JSONObject().apply {
-                    put("hablado", hablado)
-                    put("solucionado", solucionado)
-                    if (acuerdo != null) put("acuerdo", acuerdo)
-                }.toString()
-                restSyncManager.enqueueOfflineAction(
-                    "hogares/${problem.hogar_id}/problemas/${problem.id}/estado",
-                    "PATCH",
-                    json,
-                    "ACTUALIZAR_ESTADO_PROBLEMA",
-                    "Actualizar estado del problema #${problem.id}"
-                )
-            }
+            ApiClient.service.updateProblemStatus(
+                homeId,
+                problemId,
+                UpdateProblemStatusRequest(hablado = hablado, solucionado = solucionado, acuerdo = acuerdo)
+            )
+            fetchProblems(homeId)
         } catch (e: Exception) {
-            val json = JSONObject().apply {
-                put("hablado", hablado)
-                put("solucionado", solucionado)
-                if (acuerdo != null) put("acuerdo", acuerdo)
-            }.toString()
-            restSyncManager.enqueueOfflineAction(
-                "hogares/${problem.hogar_id}/problemas/${problem.id}/estado",
-                "PATCH",
-                json,
-                "ACTUALIZAR_ESTADO_PROBLEMA",
-                "Actualizar estado del problema #${problem.id}"
-            )
+            SyncLogCollector.e(TAG, "Error actualizando detalles de problema: ${e.message}", e)
         }
     }
 
-    // --- Shopping / Needs ---
-    fun getNeedListsForHome(homeId: Int): Flow<List<NeedListEntity>> =
-        needListDao.getListsForHome(homeId)
+    suspend fun deleteProblem(problemId: Int, homeId: Int? = null) = withContext(Dispatchers.IO) {
+        try {
+            val resolvedHomeId = homeId ?: _problems.value.find { it.id == problemId }?.hogar_id ?: ApiClient.getSavedHomeId()
+            if (resolvedHomeId != null) {
+                val resp = ApiClient.service.deleteProblem(resolvedHomeId, problemId)
+                if (resp.isSuccessful) {
+                    fetchProblems(resolvedHomeId)
+                }
+            }
+        } catch (e: Exception) {
+            SyncLogCollector.e(TAG, "Error eliminando problema: ${e.message}", e)
+        }
+    }
+
+    // ==========================================
+    // Shopping / Needs
+    // ==========================================
+    fun getNeedListsForHome(homeId: Int): Flow<List<NeedListEntity>> = _needLists.asStateFlow()
 
     fun getNeedItemsForList(listId: Int): Flow<List<NeedItemEntity>> =
-        needListDao.getItemsForList(listId)
+        _needItems.map { list -> list.filter { it.lista_id == listId } }
 
     suspend fun createNeedList(homeId: Int, createdBy: Int, titulo: String): Long = withContext(Dispatchers.IO) {
         try {
-            val resp = ApiClient.service.createNeedList(
-                homeId = homeId,
-                request = CreateNeedListRequest(titulo = titulo)
-            )
+            val resp = ApiClient.service.createNeedList(homeId, CreateNeedListRequest(titulo = titulo))
             if (resp.isSuccessful && resp.body()?.data != null) {
-                val nl = resp.body()!!.data
-                val serverListId = if (nl.id > 0) nl.id else (System.currentTimeMillis() % 1000000).toInt()
-                val listId = needListDao.insertList(
-                    NeedListEntity(
-                        id = serverListId,
-                        hogar_id = homeId,
-                        creado_por = createdBy,
-                        titulo = nl.titulo.ifBlank { titulo },
-                        estado = nl.estado.ifBlank { "activa" }
-                    )
-                )
-                SyncLogCollector.s("WeHabita:Repo", "Lista de compras '$titulo' (#$serverListId) creada en el servidor y guardada en Room")
-                return@withContext listId
+                fetchShopping(homeId)
+                return@withContext resp.body()!!.data.id.toLong()
             }
         } catch (e: Exception) {
-            SyncLogCollector.w("WeHabita:Repo", "Fallo online al crear lista de compras: ${e.message}")
+            SyncLogCollector.e(TAG, "Error creando lista de compras: ${e.message}", e)
         }
-
-        val listId = needListDao.insertList(
-            NeedListEntity(
-                hogar_id = homeId,
-                creado_por = createdBy,
-                titulo = titulo
-            )
-        )
-        val json = JSONObject().apply { put("titulo", titulo) }.toString()
-        restSyncManager.enqueueOfflineAction(
-            "hogares/$homeId/necesidades",
-            "POST",
-            json,
-            "CREAR_LISTA_COMPRAS",
-            "Crear lista de compras $titulo"
-        )
-        return@withContext listId
+        0L
     }
 
     suspend fun addNeedItem(
-        listaId: Int,
-        nombre: String,
+        listId: Int,
+        productoNombre: String,
         cantidad: Int,
         fechaNecesaria: String,
+        notas: String?,
         compradorId: Int?,
-        notas: String?
+        homeId: Int? = null
     ): Long = withContext(Dispatchers.IO) {
-        val list = needListDao.getAllNeedListsList().find { it.id == listaId }
-        val homeId = list?.hogar_id ?: ApiClient.getSavedHomeId() ?: 1
-
         try {
-            val resp = ApiClient.service.addNeedItem(
-                homeId = homeId,
-                listId = listaId,
-                request = CreateNeedItemRequest(
-                    producto_nombre = nombre,
+            val resolvedHomeId = homeId ?: _needLists.value.find { it.id == listId }?.hogar_id ?: ApiClient.getSavedHomeId()
+            if (resolvedHomeId != null) {
+                val req = CreateNeedItemRequest(
+                    producto_nombre = productoNombre,
                     cantidad = cantidad,
                     fecha_necesaria = fechaNecesaria,
-                    comprador_id = compradorId,
-                    notas = notas
+                    notas = notas,
+                    comprador_id = compradorId
                 )
-            )
-            if (resp.isSuccessful && resp.body()?.data != null) {
-                val it = resp.body()!!.data
-                val serverItemId = if (it.id > 0) it.id else (System.currentTimeMillis() % 1000000).toInt()
-                val itemId = needListDao.insertItem(
-                    NeedItemEntity(
-                        id = serverItemId,
-                        lista_id = listaId,
-                        producto_nombre = it.producto_nombre.ifBlank { nombre },
-                        cantidad = if (it.cantidad > 0) it.cantidad else cantidad,
-                        fecha_necesaria = it.fecha_necesaria.ifBlank { fechaNecesaria },
-                        comprador_id = it.comprador?.id ?: compradorId,
-                        estado = it.estado.ifBlank { "pendiente" },
-                        notas = it.notas ?: notas
-                    )
-                )
-                SyncLogCollector.s("WeHabita:Repo", "Item '$nombre' (#$serverItemId) agregado a lista de compras en Room")
-                return@withContext itemId
+                val resp = ApiClient.service.addNeedItem(resolvedHomeId, listId, req)
+                if (resp.isSuccessful && resp.body()?.data != null) {
+                    fetchShopping(resolvedHomeId)
+                    return@withContext resp.body()!!.data.id.toLong()
+                }
             }
         } catch (e: Exception) {
-            SyncLogCollector.w("WeHabita:Repo", "Fallo online al agregar item a lista: ${e.message}")
+            SyncLogCollector.e(TAG, "Error agregando item de compras: ${e.message}", e)
         }
-
-        val itemId = needListDao.insertItem(
-            NeedItemEntity(
-                lista_id = listaId,
-                producto_nombre = nombre,
-                cantidad = cantidad,
-                fecha_necesaria = fechaNecesaria,
-                comprador_id = compradorId,
-                estado = "pendiente",
-                notas = notas
-            )
-        )
-
-        val json = JSONObject().apply {
-            put("producto_nombre", nombre)
-            put("cantidad", cantidad)
-            put("fecha_necesaria", fechaNecesaria)
-            if (compradorId != null) put("comprador_id", compradorId)
-            if (notas != null) put("notas", notas)
-        }.toString()
-        restSyncManager.enqueueOfflineAction(
-            "hogares/$homeId/necesidades/$listaId/items",
-            "POST",
-            json,
-            "AGREGAR_ITEM_COMPRA",
-            "Agregar item $nombre a la lista"
-        )
-        return@withContext itemId
+        0L
     }
 
-    suspend fun updateNeedItemStatus(item: NeedItemEntity, newStatus: String) = withContext(Dispatchers.IO) {
-        needListDao.updateItem(item.copy(estado = newStatus))
+    suspend fun updateNeedItemStatus(item: NeedItemEntity, newStatus: String, homeId: Int? = null) = withContext(Dispatchers.IO) {
         try {
-            val list = needListDao.getAllNeedListsList().find { it.id == item.lista_id }
-            val homeId = list?.hogar_id ?: ApiClient.getSavedHomeId() ?: 1
-            val resp = ApiClient.service.updateNeedItemStatus(
-                homeId = homeId,
-                itemId = item.id,
-                request = UpdateItemStatusRequest(estado = newStatus)
-            )
-            if (!resp.isSuccessful) {
-                val json = JSONObject().apply { put("estado", newStatus) }.toString()
-                restSyncManager.enqueueOfflineAction(
-                    "hogares/$homeId/necesidades/items/${item.id}/estado",
-                    "PATCH",
-                    json,
-                    "ACTUALIZAR_ESTADO_ITEM",
-                    "Actualizar estado del item #${item.id} a $newStatus"
+            val resolvedHomeId = homeId ?: _needLists.value.find { it.id == item.lista_id }?.hogar_id ?: ApiClient.getSavedHomeId()
+            if (resolvedHomeId != null) {
+                val resp = ApiClient.service.updateNeedItemStatus(
+                    resolvedHomeId,
+                    item.id,
+                    UpdateItemStatusRequest(estado = newStatus)
                 )
+                if (resp.isSuccessful) {
+                    fetchShopping(resolvedHomeId)
+                }
             }
         } catch (e: Exception) {
-            val hId = ApiClient.getSavedHomeId() ?: 1
-            val json = JSONObject().apply { put("estado", newStatus) }.toString()
-            restSyncManager.enqueueOfflineAction(
-                "hogares/$hId/necesidades/items/${item.id}/estado",
-                "PATCH",
-                json,
-                "ACTUALIZAR_ESTADO_ITEM",
-                "Actualizar estado del item #${item.id} a $newStatus"
-            )
+            SyncLogCollector.e(TAG, "Error actualizando estado del item: ${e.message}", e)
         }
     }
 
-    suspend fun deleteNeedItem(itemId: Int) = withContext(Dispatchers.IO) {
-        needListDao.deleteItem(itemId)
-        val homeId = ApiClient.getSavedHomeId() ?: 1
+    suspend fun deleteNeedItem(itemId: Int, homeId: Int? = null) = withContext(Dispatchers.IO) {
         try {
-            val resp = ApiClient.service.deleteNeedItem(homeId = homeId, itemId = itemId)
-            if (!resp.isSuccessful) {
-                restSyncManager.enqueueOfflineAction(
-                    "hogares/$homeId/necesidades/items/$itemId",
-                    "DELETE",
-                    null,
-                    "ELIMINAR_ITEM_COMPRA",
-                    "Eliminar item de compra #$itemId"
-                )
+            val item = _needItems.value.find { it.id == itemId }
+            val resolvedHomeId = homeId ?: (item?.let { itm -> _needLists.value.find { it.id == itm.lista_id }?.hogar_id }) ?: ApiClient.getSavedHomeId()
+            if (resolvedHomeId != null) {
+                val resp = ApiClient.service.deleteNeedItem(resolvedHomeId, itemId)
+                if (resp.isSuccessful) {
+                    fetchShopping(resolvedHomeId)
+                }
             }
         } catch (e: Exception) {
-            restSyncManager.enqueueOfflineAction(
-                "hogares/$homeId/necesidades/items/$itemId",
-                "DELETE",
-                null,
-                "ELIMINAR_ITEM_COMPRA",
-                "Eliminar item de compra #$itemId"
-            )
+            SyncLogCollector.e(TAG, "Error eliminando item de compra: ${e.message}", e)
         }
     }
 
-    // --- Goals & Compound Missions ---
-    fun getGoalsForHome(homeId: Int): Flow<List<GoalEntity>> = goalDao.getGoalsForHome(homeId)
+    // ==========================================
+    // Goals / Objectives
+    // ==========================================
+    fun getGoalsForHome(homeId: Int): Flow<List<GoalEntity>> = _goals.asStateFlow()
 
-    fun getGoalPoints(goalId: Int): Flow<List<GoalPointEntity>> = goalDao.getPointsForGoal(goalId)
+    fun getGoalPoints(goalId: Int): Flow<List<GoalPointEntity>> =
+        _goalPoints.map { it[goalId] ?: emptyList() }
 
     suspend fun createGoal(
         homeId: Int,
@@ -1346,247 +893,543 @@ class WeHabitaRepository(
         titulo: String,
         descripcion: String?,
         tipo: String,
-        fechaLimiteOriginal: String,
+        fechaLimite: String,
         puntos: List<Pair<String, Int?>>
     ): Long = withContext(Dispatchers.IO) {
-        val ptDtos = puntos.mapIndexed { idx, (t, a) -> GoalPointInputDto(titulo = t, asignado_a = a, orden = idx) }
-
-        // 1. Try online
         try {
-            val resp = ApiClient.service.createGoal(
-                homeId = homeId,
-                request = CreateGoalRequest(
-                    titulo = titulo,
-                    descripcion = descripcion,
-                    tipo = tipo,
-                    fecha_limite = fechaLimiteOriginal,
-                    puntos = ptDtos
-                )
+            val req = CreateGoalRequest(
+                titulo = titulo,
+                descripcion = descripcion,
+                tipo = tipo,
+                fecha_limite = fechaLimite,
+                puntos = puntos.map { GoalPointInputDto(titulo = it.first, asignado_a = it.second) }
             )
+            val resp = ApiClient.service.createGoal(homeId, req)
             if (resp.isSuccessful && resp.body()?.data != null) {
-                val g = resp.body()!!.data
-                val serverGoalId = if (g.id > 0) g.id else (System.currentTimeMillis() % 1000000).toInt()
-                val goalId = goalDao.insertGoal(
-                    GoalEntity(
-                        id = serverGoalId,
-                        hogar_id = homeId,
-                        creado_por = createdBy,
-                        titulo = g.titulo.ifBlank { titulo },
-                        descripcion = g.descripcion ?: descripcion,
-                        tipo = g.tipo.ifBlank { tipo },
-                        completado = g.completado,
-                        fecha_limite_original = g.fecha_limite_original.ifBlank { fechaLimiteOriginal },
-                        fecha_limite_actual = g.fecha_limite_actual.ifBlank { fechaLimiteOriginal }
-                    )
-                ).toInt()
-
-                if (g.puntos.isNotEmpty()) {
-                    for (pt in g.puntos) {
-                        goalDao.insertGoalPoint(
-                            GoalPointEntity(
-                                id = pt.id,
-                                objetivo_id = serverGoalId,
-                                titulo = pt.titulo,
-                                descripcion = pt.descripcion,
-                                asignado_a = pt.asignado?.id,
-                                completado = pt.completado,
-                                completado_por = pt.completado_por?.id,
-                                orden = pt.orden
-                            )
-                        )
-                    }
-                } else {
-                    for ((idx, pPair) in puntos.withIndex()) {
-                        val (pTitle, pAssignee) = pPair
-                        goalDao.insertGoalPoint(
-                            GoalPointEntity(
-                                objetivo_id = serverGoalId,
-                                titulo = pTitle,
-                                asignado_a = pAssignee,
-                                orden = idx
-                            )
-                        )
-                    }
-                }
-                SyncLogCollector.s("WeHabita:Repo", "Meta '$titulo' (#$serverGoalId) creada en el servidor y guardada en Room")
-                return@withContext goalId.toLong()
+                fetchGoals(homeId)
+                SyncLogCollector.s(TAG, "Meta/Objetivo creado en el servidor.")
+                return@withContext resp.body()!!.data.id.toLong()
             }
         } catch (e: Exception) {
-            SyncLogCollector.w("WeHabita:Repo", "Fallo online al crear meta: ${e.message}")
+            SyncLogCollector.e(TAG, "Error creando meta: ${e.message}", e)
         }
-
-        // 2. Offline fallback
-        val goal = GoalEntity(
-            hogar_id = homeId,
-            creado_por = createdBy,
-            titulo = titulo,
-            descripcion = descripcion,
-            tipo = tipo,
-            completado = false,
-            fecha_limite_original = fechaLimiteOriginal,
-            fecha_limite_actual = fechaLimiteOriginal
-        )
-        val goalId = goalDao.insertGoal(goal).toInt()
-
-        puntos.forEachIndexed { index, (ptTitle, assignedTo) ->
-            goalDao.insertGoalPoint(
-                GoalPointEntity(
-                    objetivo_id = goalId,
-                    titulo = ptTitle,
-                    asignado_a = assignedTo,
-                    orden = index + 1
-                )
-            )
-        }
-
-        val json = JSONObject().apply {
-            put("titulo", titulo)
-            put("descripcion", descripcion)
-            put("tipo", tipo)
-            put("fecha_limite", fechaLimiteOriginal)
-            val pArr = JSONArray()
-            for (p in ptDtos) {
-                val pObj = JSONObject()
-                pObj.put("titulo", p.titulo)
-                if (p.asignado_a != null) pObj.put("asignado_a", p.asignado_a)
-                pObj.put("orden", p.orden)
-                pArr.put(pObj)
-            }
-            put("puntos", pArr)
-        }.toString()
-        restSyncManager.enqueueOfflineAction(
-            "hogares/$homeId/objetivos",
-            "POST",
-            json,
-            "CREAR_OBJETIVO",
-            "Crear meta o misión compuesta: $titulo"
-        )
-
-        return@withContext goalId.toLong()
+        0L
     }
 
     suspend fun postponeGoal(goal: GoalEntity, newDeadline: String) = withContext(Dispatchers.IO) {
-        goalDao.updateGoal(goal.copy(fecha_limite_actual = newDeadline))
         try {
-            val resp = ApiClient.service.postponeGoal(
-                homeId = goal.hogar_id,
-                goalId = goal.id,
-                request = PostponeGoalRequest(nueva_fecha_limite = newDeadline)
-            )
-            if (!resp.isSuccessful) {
-                val json = JSONObject().apply { put("nueva_fecha_limite", newDeadline) }.toString()
-                restSyncManager.enqueueOfflineAction(
-                    "hogares/${goal.hogar_id}/objetivos/${goal.id}/posponer",
-                    "PATCH",
-                    json,
-                    "POSPONER_OBJETIVO",
-                    "Posponer meta #${goal.id} hasta $newDeadline"
-                )
+            val resp = ApiClient.service.postponeGoal(goal.hogar_id, goal.id, PostponeGoalRequest(nueva_fecha_limite = newDeadline))
+            if (resp.isSuccessful) {
+                fetchGoals(goal.hogar_id)
             }
         } catch (e: Exception) {
-            val json = JSONObject().apply { put("nueva_fecha_limite", newDeadline) }.toString()
-            restSyncManager.enqueueOfflineAction(
-                "hogares/${goal.hogar_id}/objetivos/${goal.id}/posponer",
-                "PATCH",
-                json,
-                "POSPONER_OBJETIVO",
-                "Posponer meta #${goal.id} hasta $newDeadline"
-            )
+            SyncLogCollector.e(TAG, "Error aplazando meta: ${e.message}", e)
         }
     }
 
     suspend fun setGoalCompleted(goal: GoalEntity, completed: Boolean) = withContext(Dispatchers.IO) {
-        goalDao.updateGoal(goal.copy(completado = completed))
         try {
-            val resp = ApiClient.service.completeGoal(
-                homeId = goal.hogar_id,
-                goalId = goal.id,
-                request = CompleteGoalRequest(completado = completed)
-            )
-            if (!resp.isSuccessful) {
-                val json = JSONObject().apply { put("completado", completed) }.toString()
-                restSyncManager.enqueueOfflineAction(
-                    "hogares/${goal.hogar_id}/objetivos/${goal.id}/completar",
-                    "PATCH",
-                    json,
-                    "ACTUALIZAR_ESTADO_OBJETIVO",
-                    "Marcar meta #${goal.id} como ${if (completed) "completada" else "pendiente"}"
-                )
+            val resp = ApiClient.service.completeGoal(goal.hogar_id, goal.id, CompleteGoalRequest(completado = completed))
+            if (resp.isSuccessful) {
+                fetchGoals(goal.hogar_id)
             }
         } catch (e: Exception) {
-            val json = JSONObject().apply { put("completado", completed) }.toString()
-            restSyncManager.enqueueOfflineAction(
-                "hogares/${goal.hogar_id}/objetivos/${goal.id}/completar",
-                "PATCH",
-                json,
-                "ACTUALIZAR_ESTADO_OBJETIVO",
-                "Marcar meta #${goal.id} como ${if (completed) "completada" else "pendiente"}"
-            )
+            SyncLogCollector.e(TAG, "Error completando meta: ${e.message}", e)
         }
     }
 
-    suspend fun toggleGoalPoint(point: GoalPointEntity, completed: Boolean, userId: Int?) = withContext(Dispatchers.IO) {
-        goalDao.updateGoalPoint(
-            point.copy(
-                completado = completed,
-                completado_por = if (completed) userId else null
-            )
-        )
+    suspend fun toggleGoalPoint(point: GoalPointEntity, completed: Boolean, userId: Int?, homeId: Int? = null) = withContext(Dispatchers.IO) {
         try {
-            val goal = goalDao.getGoalById(point.objetivo_id)
-            val homeId = goal?.hogar_id ?: ApiClient.getSavedHomeId() ?: 1
-            val resp = ApiClient.service.completeGoalPoint(
-                homeId = homeId,
-                pointId = point.id,
-                request = CompleteGoalRequest(completado = completed)
-            )
-            if (!resp.isSuccessful) {
-                val json = JSONObject().apply { put("completado", completed) }.toString()
-                restSyncManager.enqueueOfflineAction(
-                    "hogares/$homeId/objetivos/puntos/${point.id}/completar",
-                    "PATCH",
-                    json,
-                    "ACTUALIZAR_PUNTO_OBJETIVO",
-                    "Marcar punto #${point.id} como ${if (completed) "completado" else "pendiente"}"
+            val resolvedHomeId = homeId ?: _goals.value.find { it.id == point.objetivo_id }?.hogar_id ?: ApiClient.getSavedHomeId()
+            if (resolvedHomeId != null) {
+                val resp = ApiClient.service.completeGoalPoint(
+                    resolvedHomeId,
+                    point.id,
+                    CompleteGoalRequest(completado = completed)
                 )
+                if (resp.isSuccessful) {
+                    fetchGoals(resolvedHomeId)
+                }
             }
         } catch (e: Exception) {
-            val hId = ApiClient.getSavedHomeId() ?: 1
-            val json = JSONObject().apply { put("completado", completed) }.toString()
-            restSyncManager.enqueueOfflineAction(
-                "hogares/$hId/objetivos/puntos/${point.id}/completar",
-                "PATCH",
-                json,
-                "ACTUALIZAR_PUNTO_OBJETIVO",
-                "Marcar punto #${point.id} como ${if (completed) "completado" else "pendiente"}"
-            )
+            SyncLogCollector.e(TAG, "Error en punto de meta: ${e.message}", e)
         }
     }
 
-    suspend fun deleteGoal(goalId: Int) = withContext(Dispatchers.IO) {
-        val goal = goalDao.getGoalById(goalId)
-        goalDao.deletePointsForGoal(goalId)
-        goalDao.deleteGoal(goalId)
-        if (goal != null) {
-            try {
-                val resp = ApiClient.service.deleteGoal(goal.hogar_id, goalId)
-                if (!resp.isSuccessful) {
-                    restSyncManager.enqueueOfflineAction(
-                        "hogares/${goal.hogar_id}/objetivos/$goalId",
-                        "DELETE",
-                        null,
-                        "ELIMINAR_OBJETIVO",
-                        "Eliminar objetivo #$goalId"
+    suspend fun deleteGoal(goalId: Int, homeId: Int? = null) = withContext(Dispatchers.IO) {
+        try {
+            val resolvedHomeId = homeId ?: _goals.value.find { it.id == goalId }?.hogar_id ?: ApiClient.getSavedHomeId()
+            if (resolvedHomeId != null) {
+                val resp = ApiClient.service.deleteGoal(resolvedHomeId, goalId)
+                if (resp.isSuccessful) {
+                    fetchGoals(resolvedHomeId)
+                }
+            }
+        } catch (e: Exception) {
+            SyncLogCollector.e(TAG, "Error eliminando meta: ${e.message}", e)
+        }
+    }
+
+    // ==========================================
+    // Live Data Fetching From REST Services
+    // ==========================================
+    suspend fun fetchHomes() = withContext(Dispatchers.IO) {
+        try {
+            val resp = ApiClient.service.getMyHomes()
+            if (resp.isSuccessful && resp.body()?.data != null) {
+                val homesList = resp.body()!!.data.map { dto ->
+                    HomeEntity(
+                        id = dto.hogar_id,
+                        nombre = dto.hogar_nombre,
+                        tipo_hogar = dto.tipo_hogar,
+                        codigo_invitacion = dto.codigo_invitacion,
+                        creado_por = 0,
+                        fecha_creacion = parseTimestamp(dto.fecha_union)
                     )
                 }
-            } catch (e: Exception) {
-                restSyncManager.enqueueOfflineAction(
-                    "hogares/${goal.hogar_id}/objetivos/$goalId",
-                    "DELETE",
-                    null,
-                    "ELIMINAR_OBJETIVO",
-                    "Eliminar objetivo #$goalId"
-                )
+                _homes.value = homesList
+                SyncLogCollector.d(TAG, "Hogares cargados desde REST: ${homesList.size} hogares")
+            }
+        } catch (e: Exception) {
+            SyncLogCollector.w(TAG, "Fallo al consultar hogares: ${e.message}")
+        }
+    }
+
+    suspend fun fetchMembers(homeId: Int) = withContext(Dispatchers.IO) {
+        try {
+            val resp = ApiClient.service.getHomeMembers(homeId)
+            if (resp.isSuccessful && resp.body()?.data != null) {
+                val memberDtos = resp.body()!!.data
+                val memberWithUsers = memberDtos.map { dto ->
+                    val user = UserEntity(
+                        id = dto.usuario_id,
+                        nombre = dto.nombre,
+                        email = dto.email,
+                        username = dto.username,
+                        codigo_usuario = dto.codigo_usuario,
+                        rol_global = "usuario",
+                        activo = true
+                    )
+                    upsertUserInMemory(user)
+
+                    val member = HomeMemberEntity(
+                        id = dto.id,
+                        hogar_id = homeId,
+                        usuario_id = dto.usuario_id,
+                        rol = dto.rol,
+                        activo = true,
+                        fecha_union = parseTimestamp(dto.fecha_union)
+                    )
+
+                    MemberWithUser(member = member, user = user)
+                }
+                _members.value = memberWithUsers
+
+                // Update member privileges map
+                val privMap = mutableMapOf<Int, List<PrivilegeEntity>>()
+                memberDtos.forEach { dto ->
+                    privMap[dto.id] = dto.privilegios.map { name ->
+                        PrivilegeEntity(id = name.hashCode(), nombre = name)
+                    }
+                }
+                _memberPrivileges.value = privMap
+                SyncLogCollector.d(TAG, "Miembros cargados desde REST: ${memberWithUsers.size} miembros")
+            }
+        } catch (e: Exception) {
+            SyncLogCollector.w(TAG, "Fallo al consultar miembros: ${e.message}")
+        }
+    }
+
+    suspend fun fetchTasks(homeId: Int) = withContext(Dispatchers.IO) {
+        try {
+            val resp = ApiClient.service.getTasks(homeId)
+            if (resp.isSuccessful && resp.body()?.data != null) {
+                val taskDtos = resp.body()!!.data
+                val taskEntities = mutableListOf<TaskEntity>()
+                val schedulesMap = mutableMapOf<Int, List<TaskScheduleEntity>>()
+                val assignmentsMap = mutableMapOf<Int, List<TaskAssignmentEntity>>()
+
+                taskDtos.forEach { dto ->
+                    taskEntities.add(
+                        TaskEntity(
+                            id = dto.id,
+                            hogar_id = if (dto.hogar_id > 0) dto.hogar_id else homeId,
+                            creado_por = dto.creado_por ?: 0,
+                            titulo = dto.titulo,
+                            descripcion = dto.descripcion,
+                            tipo = dto.tipo,
+                            fecha_inicio = dto.fecha_inicio,
+                            fecha_fin = dto.fecha_fin,
+                            activa = dto.activa,
+                            fecha_creacion = parseTimestamp(dto.fecha_creacion)
+                        )
+                    )
+                    schedulesMap[dto.id] = dto.horarios.map { s ->
+                        TaskScheduleEntity(
+                            id = s.id ?: 0,
+                            tarea_id = dto.id,
+                            hora_inicio = s.hora_inicio,
+                            hora_fin = s.hora_fin
+                        )
+                    }
+                    assignmentsMap[dto.id] = dto.asignados.map { u ->
+                        TaskAssignmentEntity(
+                            tarea_id = dto.id,
+                            usuario_id = u.id
+                        )
+                    }
+                }
+                _tasks.value = taskEntities
+                _taskSchedules.value = schedulesMap
+                _taskAssignments.value = assignmentsMap
+            }
+
+            // Also fetch task occurrences
+            val occResp = ApiClient.service.getTaskOccurrences(homeId)
+            val todayDate = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
+            val cleanOccurrences = mutableListOf<OccurrenceWithDetails>()
+
+            if (occResp.isSuccessful && occResp.body()?.data != null) {
+                val occDtos = occResp.body()!!.data
+                occDtos.forEach { dto ->
+                    val parentTask = _tasks.value.find { it.id == dto.tarea_id && it.activa }
+                    if (parentTask != null) {
+                        val taskSchedules = _taskSchedules.value[parentTask.id] ?: emptyList()
+                        // Solo conservar la ocurrencia si el horario sigue existiendo en la tarea activa
+                        val isScheduleValid = if (taskSchedules.isEmpty()) {
+                            true
+                        } else {
+                            taskSchedules.any { it.hora_inicio.trim() == dto.hora_inicio.trim() }
+                        }
+
+                        if (isScheduleValid) {
+                            val user = dto.completada_por?.let { u ->
+                                UserEntity(
+                                    id = u.id,
+                                    nombre = u.nombre,
+                                    email = u.email ?: "",
+                                    username = u.username,
+                                    codigo_usuario = u.codigo_usuario ?: ""
+                                )
+                            }
+                            val occEntity = TaskOccurrenceEntity(
+                                id = dto.id,
+                                tarea_id = dto.tarea_id,
+                                fecha = dto.fecha,
+                                hora_inicio = dto.hora_inicio,
+                                hora_fin = dto.hora_fin,
+                                completada = dto.completada,
+                                completada_por = dto.completada_por?.id,
+                                fecha_completada = parseTimestamp(dto.fecha_completada),
+                                notas = dto.notas
+                            )
+                            cleanOccurrences.add(
+                                OccurrenceWithDetails(
+                                    occurrence = occEntity,
+                                    task = parentTask,
+                                    completedByUser = user
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Asegurar que para tareas activas con horarios, los horarios vigentes estén disponibles para hoy si no vinieron en el endpoint
+            _tasks.value.filter { it.activa }.forEach { task ->
+                val schedules = _taskSchedules.value[task.id] ?: emptyList()
+                if (task.tipo == "fija" || task.fecha_inicio == todayDate) {
+                    schedules.forEach { s ->
+                        val alreadyExists = cleanOccurrences.any {
+                            it.occurrence.tarea_id == task.id &&
+                            it.occurrence.fecha == todayDate &&
+                            it.occurrence.hora_inicio.trim() == s.hora_inicio.trim()
+                        }
+                        if (!alreadyExists) {
+                            val synthId = (task.id * 10000 + s.hora_inicio.hashCode()).let { if (it < 0) -it else it }
+                            cleanOccurrences.add(
+                                OccurrenceWithDetails(
+                                    occurrence = TaskOccurrenceEntity(
+                                        id = synthId,
+                                        tarea_id = task.id,
+                                        fecha = todayDate,
+                                        hora_inicio = s.hora_inicio,
+                                        hora_fin = s.hora_fin,
+                                        completada = false
+                                    ),
+                                    task = task,
+                                    completedByUser = null
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+
+            _occurrences.value = cleanOccurrences
+            SyncLogCollector.d(TAG, "Tareas sincronizadas con REST: ${_tasks.value.size} activas, ${cleanOccurrences.size} ocurrencias válidas")
+        } catch (e: Exception) {
+            SyncLogCollector.w(TAG, "Fallo al consultar tareas: ${e.message}")
+        }
+    }
+
+    suspend fun fetchPenalties(homeId: Int) = withContext(Dispatchers.IO) {
+        try {
+            val resp = ApiClient.service.getPenalties(homeId)
+            if (resp.isSuccessful && resp.body()?.data != null) {
+                val dtos = resp.body()!!.data
+                val penaltyEntities = mutableListOf<PenaltyEntity>()
+                val userMap = mutableMapOf<Int, List<Int>>()
+
+                dtos.forEach { dto ->
+                    penaltyEntities.add(
+                        PenaltyEntity(
+                            id = dto.id,
+                            hogar_id = dto.hogar_id,
+                            creado_por = dto.creado_por ?: 0,
+                            titulo = dto.titulo,
+                            descripcion_motivo = dto.descripcion_motivo,
+                            penalizacion = dto.penalizacion,
+                            fecha_inicio = dto.fecha_inicio,
+                            fecha_fin = dto.fecha_fin,
+                            fecha_creacion = parseTimestamp(dto.fecha_creacion),
+                            estado = dto.estado
+                        )
+                    )
+                    userMap[dto.id] = dto.usuarios_penalizados.map { it.id }
+                    dto.usuarios_penalizados.forEach { u ->
+                        upsertUserInMemory(
+                            UserEntity(
+                                id = u.id,
+                                nombre = u.nombre,
+                                email = u.email ?: "",
+                                username = u.username,
+                                codigo_usuario = u.codigo_usuario ?: ""
+                            )
+                        )
+                    }
+                }
+                _penalties.value = penaltyEntities
+                _penaltyUsers.value = userMap
+                SyncLogCollector.d(TAG, "Penalizaciones cargadas desde REST: ${penaltyEntities.size}")
+            }
+        } catch (e: Exception) {
+            SyncLogCollector.w(TAG, "Fallo al consultar penalizaciones: ${e.message}")
+        }
+    }
+
+    suspend fun fetchProblems(homeId: Int) = withContext(Dispatchers.IO) {
+        try {
+            val resp = ApiClient.service.getProblems(homeId)
+            if (resp.isSuccessful && resp.body()?.data != null) {
+                val dtos = resp.body()!!.data
+                val problemEntities = mutableListOf<ProblemEntity>()
+                val usersMap = mutableMapOf<Int, List<Int>>()
+                val povMap = mutableMapOf<Int, List<ProblemPointOfViewEntity>>()
+
+                dtos.forEach { dto ->
+                    problemEntities.add(
+                        ProblemEntity(
+                            id = dto.id,
+                            hogar_id = dto.hogar_id,
+                            creado_por = dto.creado_por ?: 0,
+                            titulo = dto.titulo,
+                            descripcion = dto.descripcion,
+                            hablado = dto.hablado,
+                            solucionado = dto.solucionado,
+                            acuerdo = dto.acuerdo,
+                            fecha_creacion = parseTimestamp(dto.fecha_creacion)
+                        )
+                    )
+                    usersMap[dto.id] = dto.usuarios_involucrados.map { it.id }
+                    povMap[dto.id] = dto.puntos_vista.map { pov ->
+                        ProblemPointOfViewEntity(
+                            id = pov.id,
+                            problema_id = dto.id,
+                            usuario_id = pov.usuario_id,
+                            contenido = pov.contenido,
+                            fecha_creacion = parseTimestamp(pov.fecha_creacion)
+                        )
+                    }
+                }
+                _problems.value = problemEntities
+                _problemUsers.value = usersMap
+                _problemPoints.value = povMap
+                SyncLogCollector.d(TAG, "Problemas cargados desde REST: ${problemEntities.size}")
+            }
+        } catch (e: Exception) {
+            SyncLogCollector.w(TAG, "Fallo al consultar problemas: ${e.message}")
+        }
+    }
+
+    suspend fun fetchShopping(homeId: Int) = withContext(Dispatchers.IO) {
+        try {
+            val resp = ApiClient.service.getNeedLists(homeId)
+            if (resp.isSuccessful && resp.body()?.data != null) {
+                val listDtos = resp.body()!!.data
+                val listEntities = mutableListOf<NeedListEntity>()
+                val allItems = mutableListOf<NeedItemEntity>()
+
+                listDtos.forEach { l ->
+                    listEntities.add(
+                        NeedListEntity(
+                            id = l.id,
+                            hogar_id = l.hogar_id,
+                            creado_por = l.creado_por ?: 0,
+                            titulo = l.titulo,
+                            fecha_creacion = parseTimestamp(l.fecha_creacion),
+                            estado = l.estado
+                        )
+                    )
+                    l.items.forEach { itemDto ->
+                        allItems.add(
+                            NeedItemEntity(
+                                id = itemDto.id,
+                                lista_id = l.id,
+                                producto_nombre = itemDto.producto_nombre,
+                                cantidad = itemDto.cantidad,
+                                fecha_necesaria = itemDto.fecha_necesaria,
+                                comprador_id = itemDto.comprador?.id,
+                                estado = itemDto.estado,
+                                notas = itemDto.notas
+                            )
+                        )
+                    }
+                }
+                _needLists.value = listEntities
+                _needItems.value = allItems
+                SyncLogCollector.d(TAG, "Compras cargadas desde REST: ${listEntities.size} listas, ${allItems.size} items")
+            }
+        } catch (e: Exception) {
+            SyncLogCollector.w(TAG, "Fallo al consultar compras: ${e.message}")
+        }
+    }
+
+    suspend fun fetchGoals(homeId: Int) = withContext(Dispatchers.IO) {
+        try {
+            val resp = ApiClient.service.getGoals(homeId)
+            if (resp.isSuccessful && resp.body()?.data != null) {
+                val dtos = resp.body()!!.data
+                val goalEntities = mutableListOf<GoalEntity>()
+                val pointsMap = mutableMapOf<Int, List<GoalPointEntity>>()
+
+                dtos.forEach { dto ->
+                    goalEntities.add(
+                        GoalEntity(
+                            id = dto.id,
+                            hogar_id = dto.hogar_id,
+                            creado_por = dto.creado_por ?: 0,
+                            titulo = dto.titulo,
+                            descripcion = dto.descripcion,
+                            tipo = dto.tipo,
+                            completado = dto.completado,
+                            fecha_creacion = parseTimestamp(dto.fecha_creacion),
+                            fecha_limite_original = dto.fecha_limite_original,
+                            fecha_limite_actual = dto.fecha_limite_actual,
+                            fecha_completado = parseTimestamp(dto.fecha_completado)
+                        )
+                    )
+                    pointsMap[dto.id] = dto.puntos.map { p ->
+                        GoalPointEntity(
+                            id = p.id,
+                            objetivo_id = dto.id,
+                            titulo = p.titulo,
+                            descripcion = p.descripcion,
+                            asignado_a = p.asignado?.id,
+                            completado = p.completado,
+                            fecha_completado = parseTimestamp(p.fecha_completado),
+                            completado_por = p.completado_por?.id,
+                            orden = p.orden
+                        )
+                    }
+                }
+                _goals.value = goalEntities
+                _goalPoints.value = pointsMap
+                SyncLogCollector.d(TAG, "Metas cargadas desde REST: ${goalEntities.size}")
+            }
+        } catch (e: Exception) {
+            SyncLogCollector.w(TAG, "Fallo al consultar metas: ${e.message}")
+        }
+    }
+
+    suspend fun fetchPrivileges() = withContext(Dispatchers.IO) {
+        try {
+            val resp = ApiClient.service.getPrivileges()
+            if (resp.isSuccessful && resp.body()?.data != null) {
+                _privileges.value = resp.body()!!.data.map {
+                    PrivilegeEntity(id = it.id, nombre = it.nombre, descripcion = it.descripcion)
+                }
+            }
+        } catch (e: Exception) {
+            SyncLogCollector.w(TAG, "Fallo al consultar catálogo de privilegios: ${e.message}")
+        }
+    }
+
+    suspend fun fetchInvitations(homeId: Int) = withContext(Dispatchers.IO) {
+        try {
+            val resp = ApiClient.service.getInvitationsForHome(homeId)
+            if (resp.isSuccessful && resp.body()?.data != null) {
+                _invitations.value = resp.body()!!.data.map { dto ->
+                    InvitationEntity(
+                        id = dto.id,
+                        hogar_id = homeId,
+                        codigo = dto.codigo,
+                        email_destino = dto.email_destino,
+                        usuario_destino_id = dto.usuario_destino?.id,
+                        creado_por = dto.creado_por?.id ?: 0,
+                        estado = dto.estado,
+                        fecha_creacion = parseTimestamp(dto.fecha_creacion),
+                        fecha_expiracion = dto.fecha_expiracion
+                    )
+                }
+            }
+        } catch (e: Exception) {
+            SyncLogCollector.w(TAG, "Fallo al consultar invitaciones: ${e.message}")
+        }
+    }
+
+    suspend fun fetchAllHomeData(homeId: Int) = withContext(Dispatchers.IO) {
+        fetchMembers(homeId)
+        fetchTasks(homeId)
+        fetchShopping(homeId)
+        fetchProblems(homeId)
+        fetchGoals(homeId)
+        fetchPenalties(homeId)
+        fetchInvitations(homeId)
+    }
+
+    fun clearInMemoryData() {
+        _users.value = emptyList()
+        _homes.value = emptyList()
+        _members.value = emptyList()
+        _invitations.value = emptyList()
+        _tasks.value = emptyList()
+        _taskSchedules.value = emptyMap()
+        _taskAssignments.value = emptyMap()
+        _occurrences.value = emptyList()
+        _penalties.value = emptyList()
+        _penaltyUsers.value = emptyMap()
+        _problems.value = emptyList()
+        _problemUsers.value = emptyMap()
+        _problemPoints.value = emptyMap()
+        _needLists.value = emptyList()
+        _needItems.value = emptyList()
+        _goals.value = emptyList()
+        _goalPoints.value = emptyMap()
+        SyncLogCollector.i(TAG, "Memoria RAM limpiada.")
+    }
+
+    private fun parseTimestamp(dateStr: String?): Long {
+        if (dateStr.isNullOrBlank()) return System.currentTimeMillis()
+        return try {
+            val isoFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.getDefault())
+            isoFormat.parse(dateStr)?.time ?: System.currentTimeMillis()
+        } catch (e: Exception) {
+            try {
+                val ymd = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+                ymd.parse(dateStr)?.time ?: System.currentTimeMillis()
+            } catch (e2: Exception) {
+                System.currentTimeMillis()
             }
         }
     }

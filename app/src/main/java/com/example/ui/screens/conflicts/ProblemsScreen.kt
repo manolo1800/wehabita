@@ -3,9 +3,11 @@ package com.example.ui.screens.conflicts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -37,6 +39,11 @@ fun ProblemsScreen(
     val problems by viewModel.problems.collectAsState()
     val members by viewModel.homeMembers.collectAsState()
     val currentUser by viewModel.currentUser.collectAsState()
+    val currentHome by viewModel.currentHome.collectAsState()
+
+    LaunchedEffect(currentHome?.id) {
+        viewModel.refreshProblems()
+    }
 
     var filterStatus by remember { mutableStateOf("all") }
     var selectedProblemForDetail by remember { mutableStateOf<ProblemEntity?>(null) }
@@ -85,25 +92,27 @@ fun ProblemsScreen(
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Filter Chips
+            // Filter Chips (Responsive Horizontal Scroll)
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 FilterChip(
                     selected = filterStatus == "all",
                     onClick = { filterStatus = "all" },
-                    label = { Text("Todos (${problems.size})") }
+                    label = { Text("Todos (${problems.size})", maxLines = 1, softWrap = false) }
                 )
                 FilterChip(
                     selected = filterStatus == "open",
                     onClick = { filterStatus = "open" },
-                    label = { Text("En Proceso (${problems.count { !it.solucionado }})") }
+                    label = { Text("En Proceso (${problems.count { !it.solucionado }})", maxLines = 1, softWrap = false) }
                 )
                 FilterChip(
                     selected = filterStatus == "solved",
                     onClick = { filterStatus = "solved" },
-                    label = { Text("Solucionados (${problems.count { it.solucionado }})") }
+                    label = { Text("Solucionados (${problems.count { it.solucionado }})", maxLines = 1, softWrap = false) }
                 )
             }
 

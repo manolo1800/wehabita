@@ -128,6 +128,27 @@ interface WeHabitaApiService {
         @Path("id") taskId: Int
     ): Response<ApiResponse<MessageData>>
 
+    // --- Horarios de Tareas ---
+    @DELETE("hogares/{hogarId}/tareas/{tareaId}/horarios/{horarioId}")
+    suspend fun deleteTaskSchedule(
+        @Path("hogarId") homeId: Int,
+        @Path("tareaId") taskId: Int,
+        @Path("horarioId") scheduleId: Int
+    ): Response<ApiResponse<MessageData>>
+
+    @DELETE("hogares/{hogarId}/tareas/horarios/{horarioId}")
+    suspend fun deleteTaskScheduleDirect(
+        @Path("hogarId") homeId: Int,
+        @Path("horarioId") scheduleId: Int
+    ): Response<ApiResponse<MessageData>>
+
+    @POST("hogares/{hogarId}/tareas/{tareaId}/horarios")
+    suspend fun addTaskSchedule(
+        @Path("hogarId") homeId: Int,
+        @Path("tareaId") taskId: Int,
+        @Body request: ScheduleDto
+    ): Response<ApiResponse<Any>>
+
     // --- Ocurrencias de Tareas ---
     @GET("hogares/{hogarId}/tareas-ocurrencias")
     suspend fun getTaskOccurrences(

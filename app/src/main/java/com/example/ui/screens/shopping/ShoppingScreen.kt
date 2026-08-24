@@ -2,10 +2,12 @@ package com.example.ui.screens.shopping
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -38,7 +40,12 @@ fun ShoppingScreen(
 ) {
     val needLists by viewModel.needLists.collectAsState()
     val members by viewModel.homeMembers.collectAsState()
+    val currentHome by viewModel.currentHome.collectAsState()
     val userMap = members.associate { it.user.id to it.user }
+
+    LaunchedEffect(currentHome?.id) {
+        viewModel.refreshShopping()
+    }
 
     var selectedList by remember { mutableStateOf<NeedListEntity?>(null) }
     var showCreateListDialog by remember { mutableStateOf(false) }
@@ -154,25 +161,27 @@ fun ShoppingScreen(
                 Spacer(modifier = Modifier.height(10.dp))
             }
 
-            // Filter by pending / bought
+            // Filter by pending / bought (Responsive Horizontal Scroll)
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 FilterChip(
                     selected = filterStatus == "all",
                     onClick = { filterStatus = "all" },
-                    label = { Text("Todos (${currentItems.size})") }
+                    label = { Text("Todos (${currentItems.size})", maxLines = 1, softWrap = false) }
                 )
                 FilterChip(
                     selected = filterStatus == "pending",
                     onClick = { filterStatus = "pending" },
-                    label = { Text("Pendientes (${currentItems.count { it.estado == "pendiente" }})") }
+                    label = { Text("Pendientes (${currentItems.count { it.estado == "pendiente" }})", maxLines = 1, softWrap = false) }
                 )
                 FilterChip(
                     selected = filterStatus == "bought",
                     onClick = { filterStatus = "bought" },
-                    label = { Text("Comprados (${currentItems.count { it.estado == "comprado" }})") }
+                    label = { Text("Comprados (${currentItems.count { it.estado == "comprado" }})", maxLines = 1, softWrap = false) }
                 )
             }
 

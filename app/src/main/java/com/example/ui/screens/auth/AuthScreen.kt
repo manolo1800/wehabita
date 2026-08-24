@@ -31,6 +31,10 @@ import androidx.compose.ui.unit.sp
 import com.example.data.local.entities.UserEntity
 import com.example.ui.components.WebHabitaLogo
 import com.example.ui.components.MemberAvatar
+import com.example.ui.components.AppMessagePopupDialog
+import com.example.ui.components.PopupMessage
+import com.example.ui.components.PopupMessageType
+import com.example.ui.components.UserFriendlyErrorHelper
 import com.example.ui.theme.*
 import com.example.viewmodel.WeHabitaViewModel
 
@@ -46,7 +50,6 @@ fun AuthScreen(
     var loginIdentifier by remember { mutableStateOf("") }
     var loginPassword by remember { mutableStateOf("") }
     var showLoginPassword by remember { mutableStateOf(false) }
-    var loginError by remember { mutableStateOf<String?>(null) }
     var isSubmitting by remember { mutableStateOf(false) }
 
     // Register Form State
@@ -56,7 +59,15 @@ fun AuthScreen(
     var regPassword by remember { mutableStateOf("") }
     var regConfirmPassword by remember { mutableStateOf("") }
     var showRegPassword by remember { mutableStateOf(false) }
-    var regError by remember { mutableStateOf<String?>(null) }
+
+    // Popup Message State for clear, beautiful feedback
+    var popupMessage by remember { mutableStateOf<PopupMessage?>(null) }
+
+    // Popup Dialog
+    AppMessagePopupDialog(
+        popupMessage = popupMessage,
+        onDismiss = { popupMessage = null }
+    )
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background
@@ -112,8 +123,6 @@ fun AuthScreen(
                                 .weight(1f)
                                 .clickable {
                                     selectedTab = 0
-                                    loginError = null
-                                    regError = null
                                 }
                                 .testTag("tab_login")
                         ) {
@@ -133,8 +142,6 @@ fun AuthScreen(
                                 .weight(1f)
                                 .clickable {
                                     selectedTab = 1
-                                    loginError = null
-                                    regError = null
                                 }
                                 .testTag("tab_register")
                         ) {
@@ -170,37 +177,10 @@ fun AuthScreen(
                                 color = MaterialTheme.colorScheme.onBackground
                             )
 
-                            if (loginError != null) {
-                                Surface(
-                                    color = ElegantPenaltiesContainer,
-                                    shape = RoundedCornerShape(8.dp),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(10.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Icon(
-                                            Icons.Filled.ErrorOutline,
-                                            contentDescription = null,
-                                            tint = ElegantPenaltiesRed,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text(
-                                            text = loginError ?: "",
-                                            color = ElegantPenaltiesRed,
-                                            style = MaterialTheme.typography.bodySmall
-                                        )
-                                    }
-                                }
-                            }
-
                             OutlinedTextField(
                                 value = loginIdentifier,
                                 onValueChange = {
                                     loginIdentifier = it
-                                    loginError = null
                                 },
                                 label = { Text("Usuario o Correo Electrónico") },
                                 leadingIcon = {
@@ -220,7 +200,6 @@ fun AuthScreen(
                                 value = loginPassword,
                                 onValueChange = {
                                     loginPassword = it
-                                    loginError = null
                                 },
                                 label = { Text("Contraseña") },
                                 leadingIcon = {
@@ -241,11 +220,20 @@ fun AuthScreen(
                                     imeAction = ImeAction.Done
                                 ),
                                 keyboardActions = KeyboardActions(onDone = {
-                                    if (loginIdentifier.isNotBlank()) {
-                                        isSubmitting = true
-                                        viewModel.login(loginIdentifier.trim(), loginPassword) { success, msg ->
-                                            isSubmitting = false
-                                            if (!success) loginError = msg
+                                    if (loginIdentifier.isBlank()) {
+                                        popupMessage = PopupMessage(
+                                            title = "Campo Requerido",
+                                            description = "Por favor ingresa tu nombre de usuario o correo electrónico.",
+                                            type = PopupMessageType.WARNING,
+                                            icon = Icons.Outlined.Person
+                                        )
+                                        return@KeyboardActions
+                                    }
+                                    isSubmitting = true
+                                    viewModel.login(loginIdentifier.trim(), loginPassword) { success, msg ->
+                                        isSubmitting = false
+                                        if (!success) {
+                                            popupMessage = UserFriendlyErrorHelper.formatMessage(msg, defaultTitle = "No se pudo Iniciar Sesión")
                                         }
                                     }
                                 }),
@@ -257,13 +245,20 @@ fun AuthScreen(
                             Button(
                                 onClick = {
                                     if (loginIdentifier.isBlank()) {
-                                        loginError = "Por favor ingresa tu usuario o correo."
+                                        popupMessage = PopupMessage(
+                                            title = "Campo Requerido",
+                                            description = "Por favor ingresa tu nombre de usuario o correo electrónico.",
+                                            type = PopupMessageType.WARNING,
+                                            icon = Icons.Outlined.Person
+                                        )
                                         return@Button
                                     }
                                     isSubmitting = true
                                     viewModel.login(loginIdentifier.trim(), loginPassword) { success, msg ->
                                         isSubmitting = false
-                                        if (!success) loginError = msg
+                                        if (!success) {
+                                            popupMessage = UserFriendlyErrorHelper.formatMessage(msg, defaultTitle = "No se pudo Iniciar Sesión")
+                                        }
                                     }
                                 },
                                 enabled = !isSubmitting,
@@ -431,37 +426,10 @@ fun AuthScreen(
                                 color = MaterialTheme.colorScheme.onBackground
                             )
 
-                            if (regError != null) {
-                                Surface(
-                                    color = ElegantPenaltiesContainer,
-                                    shape = RoundedCornerShape(8.dp),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(10.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Icon(
-                                            Icons.Filled.ErrorOutline,
-                                            contentDescription = null,
-                                            tint = ElegantPenaltiesRed,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text(
-                                            text = regError ?: "",
-                                            color = ElegantPenaltiesRed,
-                                            style = MaterialTheme.typography.bodySmall
-                                        )
-                                    }
-                                }
-                            }
-
                             OutlinedTextField(
                                 value = regNombre,
                                 onValueChange = {
                                     regNombre = it
-                                    regError = null
                                 },
                                 label = { Text("Nombre Completo *") },
                                 placeholder = { Text("Ej: Elena García") },
@@ -479,7 +447,6 @@ fun AuthScreen(
                                 value = regUsername,
                                 onValueChange = {
                                     regUsername = it
-                                    regError = null
                                 },
                                 label = { Text("Nombre de Usuario (@username) *") },
                                 placeholder = { Text("Ej: elena_g") },
@@ -497,7 +464,6 @@ fun AuthScreen(
                                 value = regEmail,
                                 onValueChange = {
                                     regEmail = it
-                                    regError = null
                                 },
                                 label = { Text("Correo Electrónico *") },
                                 placeholder = { Text("Ej: elena@wehabita.app") },
@@ -518,7 +484,6 @@ fun AuthScreen(
                                 value = regPassword,
                                 onValueChange = {
                                     regPassword = it
-                                    regError = null
                                 },
                                 label = { Text("Contraseña *") },
                                 leadingIcon = {
@@ -547,7 +512,6 @@ fun AuthScreen(
                                 value = regConfirmPassword,
                                 onValueChange = {
                                     regConfirmPassword = it
-                                    regError = null
                                 },
                                 label = { Text("Confirmar Contraseña *") },
                                 leadingIcon = {
@@ -567,23 +531,48 @@ fun AuthScreen(
                             Button(
                                 onClick = {
                                     if (regNombre.isBlank()) {
-                                        regError = "Ingresa tu nombre completo."
+                                        popupMessage = PopupMessage(
+                                            title = "Nombre Requerido",
+                                            description = "Por favor ingresa tu nombre completo.",
+                                            type = PopupMessageType.WARNING,
+                                            icon = Icons.Outlined.Badge
+                                        )
                                         return@Button
                                     }
                                     if (regUsername.isBlank()) {
-                                        regError = "Ingresa un nombre de usuario."
+                                        popupMessage = PopupMessage(
+                                            title = "Usuario Requerido",
+                                            description = "Por favor ingresa un nombre de usuario.",
+                                            type = PopupMessageType.WARNING,
+                                            icon = Icons.Outlined.AlternateEmail
+                                        )
                                         return@Button
                                     }
                                     if (regEmail.isBlank() || !regEmail.contains("@")) {
-                                        regError = "Ingresa un correo electrónico válido."
+                                        popupMessage = PopupMessage(
+                                            title = "Correo Inválido",
+                                            description = "Por favor ingresa una dirección de correo electrónico válida.",
+                                            type = PopupMessageType.WARNING,
+                                            icon = Icons.Outlined.Email
+                                        )
                                         return@Button
                                     }
                                     if (regPassword.length < 4) {
-                                        regError = "La contraseña debe tener al menos 4 caracteres."
+                                        popupMessage = PopupMessage(
+                                            title = "Contraseña Muy Corta",
+                                            description = "La contraseña debe tener al menos 4 caracteres.",
+                                            type = PopupMessageType.WARNING,
+                                            icon = Icons.Outlined.Lock
+                                        )
                                         return@Button
                                     }
                                     if (regPassword != regConfirmPassword) {
-                                        regError = "Las contraseñas no coinciden."
+                                        popupMessage = PopupMessage(
+                                            title = "Contraseñas No Coinciden",
+                                            description = "Las contraseñas ingresadas no son iguales. Por favor revísalas.",
+                                            type = PopupMessageType.WARNING,
+                                            icon = Icons.Outlined.LockReset
+                                        )
                                         return@Button
                                     }
 
@@ -596,7 +585,7 @@ fun AuthScreen(
                                     ) { success, msg ->
                                         isSubmitting = false
                                         if (!success) {
-                                            regError = msg
+                                            popupMessage = UserFriendlyErrorHelper.formatMessage(msg, defaultTitle = "No se pudo Crear la Cuenta")
                                         }
                                     }
                                 },

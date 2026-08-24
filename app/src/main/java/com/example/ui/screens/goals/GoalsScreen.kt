@@ -3,9 +3,11 @@ package com.example.ui.screens.goals
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -38,7 +40,12 @@ fun GoalsScreen(
 ) {
     val goals by viewModel.goals.collectAsState()
     val members by viewModel.homeMembers.collectAsState()
+    val currentHome by viewModel.currentHome.collectAsState()
     val userMap = members.associate { it.user.id to it.user }
+
+    LaunchedEffect(currentHome?.id) {
+        viewModel.refreshGoals()
+    }
 
     var filterType by remember { mutableStateOf("all") }
     var postponeGoalTarget by remember { mutableStateOf<GoalEntity?>(null) }
@@ -90,30 +97,32 @@ fun GoalsScreen(
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Filter Chips
+            // Filter Chips (Responsive Horizontal Scroll)
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 FilterChip(
                     selected = filterType == "all",
                     onClick = { filterType = "all" },
-                    label = { Text("Todos (${goals.size})") }
+                    label = { Text("Todos (${goals.size})", maxLines = 1, softWrap = false) }
                 )
                 FilterChip(
                     selected = filterType == "simple",
                     onClick = { filterType = "simple" },
-                    label = { Text("Simples") }
+                    label = { Text("Simples", maxLines = 1, softWrap = false) }
                 )
                 FilterChip(
                     selected = filterType == "compound",
                     onClick = { filterType = "compound" },
-                    label = { Text("Compuestos") }
+                    label = { Text("Compuestos", maxLines = 1, softWrap = false) }
                 )
                 FilterChip(
                     selected = filterType == "completed",
                     onClick = { filterType = "completed" },
-                    label = { Text("Completados") }
+                    label = { Text("Completados", maxLines = 1, softWrap = false) }
                 )
             }
 

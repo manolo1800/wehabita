@@ -2,10 +2,12 @@ package com.example.ui.screens.tasks
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -40,12 +42,13 @@ fun TasksScreen(
     viewModel: WeHabitaViewModel,
     onOpenCreateTask: () -> Unit
 ) {
-    val occurrences by viewModel.todayOccurrences.collectAsState()
+    val occurrences by viewModel.occurrencesForDate.collectAsState()
     val allOccurrences by viewModel.allOccurrences.collectAsState()
     val tasks by viewModel.tasks.collectAsState()
     val selectedDate by viewModel.selectedDate.collectAsState()
     val members by viewModel.homeMembers.collectAsState()
     val currentUser by viewModel.currentUser.collectAsState()
+    val currentHome by viewModel.currentHome.collectAsState()
 
     var viewMode by remember { mutableStateOf("date") } // "date" or "all"
     var filterStatus by remember { mutableStateOf("all") }
@@ -53,9 +56,15 @@ fun TasksScreen(
     var taskNoteDialogOccurrence by remember { mutableStateOf<OccurrenceWithDetails?>(null) }
     var noteText by remember { mutableStateOf("") }
     var editingTask by remember { mutableStateOf<com.example.data.local.entities.TaskEntity?>(null) }
+    var taskToDelete by remember { mutableStateOf<com.example.data.local.entities.TaskEntity?>(null) }
 
     val canCreate = viewModel.hasPrivilege("crear_tareas")
     val canMark = viewModel.hasPrivilege("marcar_tareas")
+    val canEditTasks = viewModel.hasPrivilege("editar_tareas")
+
+    LaunchedEffect(currentHome?.id, selectedDate) {
+        viewModel.refreshTasks()
+    }
 
     val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
     val todayDate = dateFormat.format(Date())
@@ -113,13 +122,28 @@ fun TasksScreen(
                     )
                 }
 
-                FilledTonalButton(
-                    onClick = { showStatsDialog = true },
-                    colors = ButtonDefaults.filledTonalButtonColors(containerColor = IndigoPrimaryContainer)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Icon(Icons.Filled.Assessment, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Recuento", fontWeight = FontWeight.Bold, color = IndigoPrimary)
+                    IconButton(
+                        onClick = { viewModel.refreshTasks() },
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Refresh,
+                            contentDescription = "Actualizar tareas",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    FilledTonalButton(
+                        onClick = { showStatsDialog = true },
+                        colors = ButtonDefaults.filledTonalButtonColors(containerColor = IndigoPrimaryContainer)
+                    ) {
+                        Icon(Icons.Filled.Assessment, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Recuento", fontWeight = FontWeight.Bold, color = IndigoPrimary)
+                    }
                 }
             }
 
@@ -226,25 +250,27 @@ fun TasksScreen(
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Filter Chips
+            // Filter Chips (Responsive Horizontal Scroll)
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 FilterChip(
                     selected = filterStatus == "all",
                     onClick = { filterStatus = "all" },
-                    label = { Text("Todas (${displayOccurrences.size})") }
+                    label = { Text("Todas (${displayOccurrences.size})", maxLines = 1, softWrap = false) }
                 )
                 FilterChip(
                     selected = filterStatus == "pending",
                     onClick = { filterStatus = "pending" },
-                    label = { Text("Pendientes ($pendingCount)") }
+                    label = { Text("Pendientes ($pendingCount)", maxLines = 1, softWrap = false) }
                 )
                 FilterChip(
                     selected = filterStatus == "completed",
                     onClick = { filterStatus = "completed" },
-                    label = { Text("Hechas ($completedCount)") }
+                    label = { Text("Hechas ($completedCount)", maxLines = 1, softWrap = false) }
                 )
             }
 
@@ -349,27 +375,29 @@ fun TasksScreen(
                                     }
 
                                     if (task != null) {
-                                        IconButton(
-                                            onClick = {
-                                                editingTask = task
+                                        if (canEditTasks) {
+                                            IconButton(
+                                                onClick = {
+                                                    editingTask = task
+                                                }
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Outlined.Edit,
+                                                    contentDescription = "Editar",
+                                                    tint = MaterialTheme.colorScheme.primary
+                                                )
                                             }
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Outlined.Edit,
-                                                contentDescription = "Editar",
-                                                tint = MaterialTheme.colorScheme.primary
-                                            )
-                                        }
-                                        IconButton(
-                                            onClick = {
-                                                viewModel.deleteTask(task.id)
+                                            IconButton(
+                                                onClick = {
+                                                    taskToDelete = task
+                                                }
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Outlined.Delete,
+                                                    contentDescription = "Eliminar",
+                                                    tint = MaterialTheme.colorScheme.error
+                                                )
                                             }
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Outlined.Delete,
-                                                contentDescription = "Eliminar",
-                                                tint = MaterialTheme.colorScheme.error
-                                            )
                                         }
                                     }
                                 }
@@ -618,6 +646,51 @@ fun TasksScreen(
             confirmButton = {
                 Button(onClick = { showStatsDialog = false }) {
                     Text("Cerrar")
+                }
+            }
+        )
+    }
+
+    taskToDelete?.let { targetTask ->
+        AlertDialog(
+            onDismissRequest = { taskToDelete = null },
+            icon = { Icon(Icons.Filled.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+            title = { Text("Opciones de la Tarea") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("¿Qué acción deseas realizar sobre '${targetTask.titulo}'?")
+                    Text(
+                        "Puedes gestionar y eliminar horarios específicos sin borrar la tarea completa, o eliminar la tarea por completo del hogar.",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.deleteTask(targetTask.id)
+                        taskToDelete = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("Eliminar Tarea Completa")
+                }
+            },
+            dismissButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    OutlinedButton(
+                        onClick = {
+                            val t = targetTask
+                            taskToDelete = null
+                            editingTask = t
+                        }
+                    ) {
+                        Text("Gestionar Horarios")
+                    }
+                    TextButton(onClick = { taskToDelete = null }) {
+                        Text("Cancelar")
+                    }
                 }
             }
         )

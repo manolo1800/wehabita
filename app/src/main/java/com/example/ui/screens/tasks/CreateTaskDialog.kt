@@ -47,7 +47,8 @@ fun CreateTaskDialog(
 
     // Schedules list: pairs of (hora_inicio, hora_fin)
     val schedules = remember { mutableStateListOf<Pair<String, String?>>(Pair("08:00", "08:30"), Pair("14:00", "14:30"), Pair("20:00", "20:30")) }
-    var newTimeInput by remember { mutableStateOf("12:00") }
+    var newStartTimeInput by remember { mutableStateOf("12:00") }
+    var newEndTimeInput by remember { mutableStateOf("12:30") }
 
     // Selected assigned users
     val selectedUserIds = remember { mutableStateListOf<Int>() }
@@ -215,30 +216,54 @@ fun CreateTaskDialog(
                         }
                     }
 
-                    // Add new time row
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.padding(top = 4.dp)
+                    // Add new time inputs
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 4.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        OutlinedTextField(
-                            value = newTimeInput,
-                            onValueChange = { newTimeInput = it },
-                            label = { Text("Hora (HH:MM)") },
-                            modifier = Modifier.weight(1f),
-                            singleLine = true
-                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedTextField(
+                                value = newStartTimeInput,
+                                onValueChange = { newStartTimeInput = it },
+                                label = { Text("Hora Inicio (HH:MM)") },
+                                placeholder = { Text("08:00") },
+                                modifier = Modifier.weight(1f),
+                                singleLine = true
+                            )
+                            OutlinedTextField(
+                                value = newEndTimeInput,
+                                onValueChange = { newEndTimeInput = it },
+                                label = { Text("Hora Fin (Opcional)") },
+                                placeholder = { Text("08:30") },
+                                modifier = Modifier.weight(1f),
+                                singleLine = true
+                            )
+                        }
+
                         Button(
                             onClick = {
-                                if (newTimeInput.isNotBlank()) {
-                                    schedules.add(Pair(newTimeInput.trim(), null))
-                                    newTimeInput = "18:00"
+                                if (newStartTimeInput.isNotBlank()) {
+                                    schedules.add(
+                                        Pair(
+                                            newStartTimeInput.trim(),
+                                            newEndTimeInput.trim().ifBlank { null }
+                                        )
+                                    )
+                                    newStartTimeInput = ""
+                                    newEndTimeInput = ""
                                 }
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = IndigoPrimary)
+                            enabled = newStartTimeInput.isNotBlank(),
+                            colors = ButtonDefaults.buttonColors(containerColor = IndigoPrimary),
+                            modifier = Modifier.fillMaxWidth()
                         ) {
-                            Icon(Icons.Filled.Add, contentDescription = null)
-                            Spacer(modifier = Modifier.width(4.dp))
+                            Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
                             Text("Añadir Horario")
                         }
                     }

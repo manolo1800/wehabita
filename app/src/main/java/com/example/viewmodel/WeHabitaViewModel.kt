@@ -3,18 +3,23 @@ package com.example.viewmodel
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.data.local.WeHabitaDatabase
 import com.example.data.local.dao.MemberWithUser
 import com.example.data.local.dao.OccurrenceWithDetails
 import com.example.data.local.entities.*
 import com.example.data.remote.api.ApiClient
 import com.example.data.remote.dto.LoginRequest
 import com.example.data.remote.dto.RegisterRequest
+import com.example.data.remote.sse.HomeRealtimeEvent
+import com.example.data.remote.sse.SseConnectionStatus
+import com.example.data.remote.sse.SseEventsRepository
 import com.example.data.repository.RestSyncManager
 import com.example.data.repository.SyncLogCollector
 import com.example.data.repository.WeHabitaRepository
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -23,8 +28,15 @@ import java.util.Locale
 @OptIn(ExperimentalCoroutinesApi::class)
 class WeHabitaViewModel(application: Application) : AndroidViewModel(application) {
 
-    val repository: WeHabitaRepository
-    val restSyncManager: RestSyncManager
+    val repository: WeHabitaRepository = WeHabitaRepository()
+    val restSyncManager: RestSyncManager = repository.restSyncManager
+    val sseRepository: SseEventsRepository
+
+    // Realtime SSE State
+    private val _sseStatus = MutableStateFlow(SseConnectionStatus.DISCONNECTED)
+    val sseStatus: StateFlow<SseConnectionStatus> = _sseStatus.asStateFlow()
+    private var realtimeSseJob: Job? = null
+    private var currentListeningHomeId: Int? = null
 
     // REST Server Base URL
     private val _restServerUrl = MutableStateFlow(ApiClient.getBaseUrl())
@@ -88,12 +100,12 @@ class WeHabitaViewModel(application: Application) : AndroidViewModel(application
     // Invitations for Current Home
     val invitationsForHome: StateFlow<List<InvitationEntity>>
 
-    // Pending Sync Flow
+    // Pending Sync Flow (Always 0 because data operations are direct to services)
     val pendingSyncCount: StateFlow<Int>
     val pendingSyncQueue: StateFlow<List<SyncQueueEntity>>
 
     // Sync State
-    private val _lastSyncStatus = MutableStateFlow("Local Room SQLite Activo (Offline-First)")
+    private val _lastSyncStatus = MutableStateFlow("Conectado a servicios REST")
     val lastSyncStatus: StateFlow<String> = _lastSyncStatus.asStateFlow()
 
     private val _isSyncing = MutableStateFlow(false)
@@ -103,34 +115,20 @@ class WeHabitaViewModel(application: Application) : AndroidViewModel(application
     val diagnosticLogs: StateFlow<List<com.example.data.repository.DiagnosticLogEntry>> = SyncLogCollector.logs
 
     init {
-        // 1. Initialize persistent ApiClient with Application Context
+        // 1. Initialize persistent ApiClient (stores Token & Home ID in SharedPreferences)
         ApiClient.init(application)
         _restServerUrl.value = ApiClient.getBaseUrl()
+        sseRepository = SseEventsRepository({ ApiClient.getBaseUrl() })
 
-        // 2. Initialize Room Database & Repositories
-        val db = WeHabitaDatabase.getDatabase(application)
-        restSyncManager = RestSyncManager(db)
-        repository = WeHabitaRepository(db, restSyncManager)
-
-        // 3. Initialize StateFlows
+        // 2. Initialize in-memory StateFlows bound to Repository
         allUsers = repository.getAllUsers()
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-        userHomes = _currentUser.flatMapLatest { user ->
-            if (user != null) {
-                repository.getHomesForUser(user.id)
-            } else {
-                flowOf(emptyList())
-            }
-        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        userHomes = repository.getHomesForUser(0)
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-        homeMembers = _currentHome.flatMapLatest { home ->
-            if (home != null) {
-                repository.getMembersWithUserForHome(home.id)
-            } else {
-                flowOf(emptyList())
-            }
-        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        homeMembers = repository.getMembersWithUserForHome(0)
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
         currentMember = combine(_currentUser, homeMembers) { user, members ->
             if (user == null) null
@@ -148,76 +146,40 @@ class WeHabitaViewModel(application: Application) : AndroidViewModel(application
         allPrivileges = repository.getAllPrivileges()
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-        tasksForHome = _currentHome.flatMapLatest { home ->
-            if (home != null) {
-                repository.getTasksForHome(home.id)
-            } else {
-                flowOf(emptyList())
-            }
-        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        tasksForHome = repository.getTasksForHome(0)
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
         tasks = tasksForHome
 
-        occurrencesForDate = combine(_currentHome, _selectedDate) { home, date ->
-            Pair(home, date)
-        }.flatMapLatest { (home, date) ->
-            if (home != null) {
-                repository.getOccurrencesForHomeAndDate(home.id, date)
-            } else {
-                flowOf(emptyList())
-            }
-        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-        todayOccurrences = occurrencesForDate
-        allOccurrences = _currentHome.flatMapLatest { home ->
-            if (home != null) {
-                repository.getAllOccurrencesForHome(home.id)
-            } else {
-                flowOf(emptyList())
-            }
+        occurrencesForDate = combine(repository.getAllOccurrencesForHome(0), _selectedDate) { list, date ->
+            list.filter { it.occurrence.fecha == date }
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-        penaltiesForHome = _currentHome.flatMapLatest { home ->
-            if (home != null) {
-                repository.getPenaltiesForHome(home.id)
-            } else {
-                flowOf(emptyList())
-            }
+        todayOccurrences = repository.getAllOccurrencesForHome(0).map { list ->
+            val today = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
+            list.filter { it.occurrence.fecha == today }
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+        allOccurrences = repository.getAllOccurrencesForHome(0)
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+        penaltiesForHome = repository.getPenaltiesForHome(0)
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
         penalties = penaltiesForHome
 
-        problemsForHome = _currentHome.flatMapLatest { home ->
-            if (home != null) {
-                repository.getProblemsForHome(home.id)
-            } else {
-                flowOf(emptyList())
-            }
-        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        problemsForHome = repository.getProblemsForHome(0)
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
         problems = problemsForHome
 
-        needListsForHome = _currentHome.flatMapLatest { home ->
-            if (home != null) {
-                repository.getNeedListsForHome(home.id)
-            } else {
-                flowOf(emptyList())
-            }
-        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        needListsForHome = repository.getNeedListsForHome(0)
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
         needLists = needListsForHome
 
-        goalsForHome = _currentHome.flatMapLatest { home ->
-            if (home != null) {
-                repository.getGoalsForHome(home.id)
-            } else {
-                flowOf(emptyList())
-            }
-        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        goalsForHome = repository.getGoalsForHome(0)
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
         goals = goalsForHome
 
-        invitationsForHome = _currentHome.flatMapLatest { home ->
-            if (home != null) {
-                repository.getInvitationsForHome(home.id)
-            } else {
-                flowOf(emptyList())
-            }
-        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        invitationsForHome = repository.getInvitationsForHome(0)
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
         pendingSyncCount = repository.getPendingSyncCount()
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
@@ -225,7 +187,7 @@ class WeHabitaViewModel(application: Application) : AndroidViewModel(application
         pendingSyncQueue = repository.getPendingSyncQueue()
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-        // 4. Auto-select active home whenever userHomes changes
+        // 3. Auto-select active home whenever userHomes changes
         viewModelScope.launch {
             userHomes.collect { homes ->
                 if (homes.isNotEmpty()) {
@@ -235,78 +197,91 @@ class WeHabitaViewModel(application: Application) : AndroidViewModel(application
                         val matching = homes.find { it.id == savedHomeId } ?: homes.first()
                         _currentHome.value = matching
                         ApiClient.saveHomeId(matching.id)
+                        repository.fetchAllHomeData(matching.id)
                     }
                 }
             }
         }
 
-        // 5. Restore saved user session on app launch
+        // 4. Restore saved user session on app launch
         restoreUserSession()
+
+        // 5. Realtime SSE: automatically maintain connection for the active home
+        viewModelScope.launch {
+            combine(_currentUser, _currentHome) { user, home ->
+                Pair(user, home)
+            }.collect { (user, home) ->
+                if (user != null && home != null) {
+                    startListeningRealtime(home.id)
+                } else {
+                    stopListeningRealtime()
+                }
+            }
+        }
     }
 
     private fun restoreUserSession() {
         viewModelScope.launch {
-            val savedUserId = ApiClient.getSavedUserId()
-            val savedHomeId = ApiClient.getSavedHomeId()
             val token = ApiClient.getAuthToken()
+            val savedHomeId = ApiClient.getSavedHomeId()
 
-            if (savedUserId != null) {
-                val user = repository.getUserById(savedUserId)
-                if (user != null) {
-                    _currentUser.value = user
-                    if (savedHomeId != null) {
-                        val home = repository.getHomeById(savedHomeId)
-                        if (home != null) {
-                            _currentHome.value = home
-                        }
-                    }
-                    SyncLogCollector.s("WeHabita:Session", "Sesión de '${user.nombre}' restaurada.")
-                    
-                    if (!token.isNullOrBlank()) {
-                        launch {
-                            val (ok, _) = restSyncManager.syncWithServer(savedHomeId)
-                            if (ok) {
-                                repository.getUserById(savedUserId)?.let { _currentUser.value = it }
-                                val activeHId = _currentHome.value?.id ?: ApiClient.getSavedHomeId()
-                                if (activeHId != null) {
-                                    repository.getHomeById(activeHId)?.let { _currentHome.value = it }
-                                }
-                            }
-                        }
-                    }
-                    return@launch
-                }
-            }
-
-            // If user was not found locally but we have a token, pull from server
-            if (!token.isNullOrBlank()) {
-                SyncLogCollector.i("WeHabita:Session", "Restaurando sesión desde el servidor REST...")
-                launch {
-                    val (ok, _) = restSyncManager.syncWithServer(savedHomeId)
-                    if (ok) {
-                        val newUserId = ApiClient.getSavedUserId()
-                        if (newUserId != null) {
-                            repository.getUserById(newUserId)?.let { _currentUser.value = it }
-                        }
-                        val newHomeId = ApiClient.getSavedHomeId()
-                        if (newHomeId != null) {
-                            repository.getHomeById(newHomeId)?.let { _currentHome.value = it }
-                        }
-                    }
-                }
+            if (token.isNullOrBlank()) {
+                SyncLogCollector.d("WeHabita:Session", "No hay token guardado. Pantalla de login requerida.")
+                _currentUser.value = null
+                _currentHome.value = null
                 return@launch
             }
 
-            // Fallback: Check if there is any local user
-            val allUsersList = repository.getAllUsers().first()
-            if (allUsersList.isNotEmpty()) {
-                val firstUser = allUsersList.first()
-                _currentUser.value = firstUser
-                ApiClient.saveUserId(firstUser.id)
-                val hId = ApiClient.getSavedHomeId()
-                if (hId != null) {
-                    repository.getHomeById(hId)?.let { _currentHome.value = it }
+            SyncLogCollector.i("WeHabita:Session", "Restaurando sesión desde servicios REST...")
+            try {
+                val meResp = ApiClient.service.getMe()
+                if (meResp.isSuccessful && meResp.body()?.data != null) {
+                    val profile = meResp.body()!!.data
+                    val userEntity = UserEntity(
+                        id = profile.id,
+                        nombre = profile.nombre,
+                        email = profile.email,
+                        username = profile.username,
+                        codigo_usuario = profile.codigo_usuario,
+                        rol_global = profile.rol_global,
+                        activo = profile.activo
+                    )
+                    _currentUser.value = userEntity
+                    ApiClient.saveUserId(profile.id)
+                    SyncLogCollector.s("WeHabita:Session", "Sesión restaurada para '${profile.nombre}' (${profile.username})")
+
+                    // Fetch homes from server
+                    repository.fetchHomes()
+                    repository.fetchPrivileges()
+
+                    val homesList = profile.hogares.map { h ->
+                        HomeEntity(
+                            id = h.hogar_id,
+                            nombre = h.hogar_nombre,
+                            tipo_hogar = h.tipo_hogar,
+                            codigo_invitacion = h.codigo_invitacion,
+                            creado_por = 0
+                        )
+                    }
+                    val selectedHome = if (savedHomeId != null) {
+                        homesList.find { it.id == savedHomeId } ?: homesList.firstOrNull()
+                    } else {
+                        homesList.firstOrNull()
+                    }
+
+                    if (selectedHome != null) {
+                        _currentHome.value = selectedHome
+                        ApiClient.saveHomeId(selectedHome.id)
+                        repository.fetchAllHomeData(selectedHome.id)
+                    }
+                } else {
+                    SyncLogCollector.w("WeHabita:Session", "Token inválido o expirado. Se requiere nuevo inicio de sesión.")
+                    ApiClient.clearSession()
+                    _currentUser.value = null
+                    _currentHome.value = null
                 }
+            } catch (e: Exception) {
+                SyncLogCollector.e("WeHabita:Session", "Fallo al restaurar sesión online: ${e.message}")
             }
         }
     }
@@ -316,6 +291,11 @@ class WeHabitaViewModel(application: Application) : AndroidViewModel(application
         ApiClient.setBaseUrl(cleanUrl)
         _restServerUrl.value = ApiClient.getBaseUrl()
         SyncLogCollector.i("WeHabita:Config", "URL de Servidor REST actualizada a: ${ApiClient.getBaseUrl()}")
+        // Reconnect SSE to new base URL if currently in a home
+        val currentHId = _currentHome.value?.id
+        if (currentHId != null) {
+            startListeningRealtime(currentHId)
+        }
     }
 
     fun clearDiagnosticLogs() {
@@ -335,7 +315,7 @@ class WeHabitaViewModel(application: Application) : AndroidViewModel(application
         val member = currentMember.value
         if (member?.rol == "admin" || member?.rol == "creador" || member?.rol == "propietario") return true
         if (userPrivileges.value.contains(privilegeName)) return true
-        
+
         // Standard household privileges for members of the active home
         val standardHouseholdPrivileges = setOf(
             "crear_tareas",
@@ -364,7 +344,7 @@ class WeHabitaViewModel(application: Application) : AndroidViewModel(application
             val cleanId = identifier.trim()
             val cleanPass = pass.trim()
 
-            // 1. Try online REST login
+            _isSyncing.value = true
             try {
                 val resp = ApiClient.service.login(LoginRequest(identifier = cleanId, password = cleanPass))
                 if (resp.isSuccessful && resp.body()?.data != null) {
@@ -384,86 +364,47 @@ class WeHabitaViewModel(application: Application) : AndroidViewModel(application
                         rol_global = p.rol_global,
                         activo = p.activo
                     )
-                    val db = WeHabitaDatabase.getDatabase(getApplication())
-                    db.userDao().insertUser(userEntity)
+                    _currentUser.value = userEntity
 
-                    var firstHome: HomeEntity? = null
-                    if (p.hogares.isNotEmpty()) {
-                        for (h in p.hogares) {
-                            val homeEnt = HomeEntity(
-                                id = h.hogar_id,
-                                nombre = h.hogar_nombre,
-                                tipo_hogar = h.tipo_hogar,
-                                codigo_invitacion = h.codigo_invitacion,
-                                creado_por = p.id
-                            )
-                            db.homeDao().insertHome(homeEnt)
-                            db.homeMemberDao().insertMember(
-                                HomeMemberEntity(
-                                    id = h.miembro_id,
-                                    hogar_id = h.hogar_id,
-                                    usuario_id = p.id,
-                                    rol = h.rol,
-                                    activo = true
-                                )
-                            )
-                            if (firstHome == null) {
-                                firstHome = homeEnt
-                            }
-                        }
+                    // Fetch fresh homes and privileges
+                    repository.fetchHomes()
+                    repository.fetchPrivileges()
+
+                    val homesList = p.hogares.map { h ->
+                        HomeEntity(
+                            id = h.hogar_id,
+                            nombre = h.hogar_nombre,
+                            tipo_hogar = h.tipo_hogar,
+                            codigo_invitacion = h.codigo_invitacion,
+                            creado_por = p.id
+                        )
                     }
 
                     val savedHomeId = ApiClient.getSavedHomeId()
                     val selectedHome = if (savedHomeId != null) {
-                        db.homeDao().getHomeById(savedHomeId) ?: firstHome
+                        homesList.find { it.id == savedHomeId } ?: homesList.firstOrNull()
                     } else {
-                        firstHome
+                        homesList.firstOrNull()
                     }
 
-                    _currentUser.value = userEntity
                     if (selectedHome != null) {
                         _currentHome.value = selectedHome
                         ApiClient.saveHomeId(selectedHome.id)
+                        repository.fetchAllHomeData(selectedHome.id)
                     }
 
-                    // Auto-sync user's complete data from server
-                    val activeHomeId = selectedHome?.id ?: savedHomeId
-                    launch {
-                        restSyncManager.syncWithServer(activeHomeId)
-                    }
-
-                    onResult(true, "¡Bienvenido, ${p.nombre} (Conectado a REST API)!")
-                    return@launch
+                    _isSyncing.value = false
+                    onResult(true, "¡Bienvenido, ${p.nombre}!")
+                } else {
+                    _isSyncing.value = false
+                    val err = resp.errorBody()?.string() ?: "Credenciales incorrectas"
+                    onResult(false, err)
                 }
             } catch (e: Exception) {
-                SyncLogCollector.w("WeHabita:Auth", "Login online falló (${e.message}), recurriendo a SQLite local...")
+                _isSyncing.value = false
+                SyncLogCollector.e("WeHabita:Auth", "Error al iniciar sesión: ${e.message}", e)
+                onResult(false, "Error de conexión con el servidor REST: ${e.localizedMessage ?: e.message}")
             }
-
-            // 2. Offline Fallback using Room SQLite
-            val localUser = repository.getUserByEmailOrUsername(cleanId.lowercase(Locale.getDefault()))
-                ?: repository.getUserByEmailOrUsername(cleanId)
-
-            if (localUser == null) {
-                onResult(false, "No se encontró usuario con '$cleanId' ni en línea ni en la base local.")
-                return@launch
-            }
-            if (localUser.password_hash.isNotBlank() && cleanPass.isNotBlank() && localUser.password_hash != cleanPass) {
-                onResult(false, "Contraseña incorrecta.")
-                return@launch
-            }
-
-            ApiClient.saveUserId(localUser.id)
-            _currentUser.value = localUser
-            
-            // Auto restore local home
-            val savedHomeId = ApiClient.getSavedHomeId()
-            if (savedHomeId != null) {
-                val localHome = repository.getHomeById(savedHomeId)
-                if (localHome != null) {
-                    _currentHome.value = localHome
-                }
-            }
-            onResult(true, "¡Bienvenido, ${localUser.nombre} (Modo Offline Local)!")
         }
     }
 
@@ -480,7 +421,7 @@ class WeHabitaViewModel(application: Application) : AndroidViewModel(application
             val cleanUsername = username.trim().lowercase(Locale.getDefault())
             val cleanPass = pass.trim()
 
-            // 1. Try online registration
+            _isSyncing.value = true
             try {
                 val resp = ApiClient.service.register(
                     RegisterRequest(
@@ -507,45 +448,22 @@ class WeHabitaViewModel(application: Application) : AndroidViewModel(application
                         rol_global = p.rol_global,
                         activo = p.activo
                     )
-                    val db = WeHabitaDatabase.getDatabase(getApplication())
-                    db.userDao().insertUser(userEntity)
-
                     _currentUser.value = userEntity
                     _currentHome.value = null
+                    repository.fetchHomes()
+                    repository.fetchPrivileges()
 
-                    launch {
-                        restSyncManager.syncWithServer(null)
-                    }
-
-                    onResult(true, "Cuenta registrada en el servidor REST. ¡Bienvenido, ${p.nombre}!")
-                    return@launch
+                    _isSyncing.value = false
+                    onResult(true, "Cuenta registrada exitosamente en el servidor. ¡Bienvenido, ${p.nombre}!")
+                } else {
+                    _isSyncing.value = false
+                    val err = resp.errorBody()?.string() ?: "Error al registrar usuario"
+                    onResult(false, err)
                 }
             } catch (e: Exception) {
-                SyncLogCollector.w("WeHabita:Auth", "Registro online falló (${e.message}), guardando en SQLite local...")
-            }
-
-            // 2. Offline registration in SQLite
-            val existingEmail = repository.getUserByEmailOrUsername(cleanEmail)
-            if (existingEmail != null) {
-                onResult(false, "Ya existe una cuenta local con el correo $cleanEmail.")
-                return@launch
-            }
-
-            val id = repository.registerUser(
-                nombre = cleanNombre,
-                email = cleanEmail,
-                username = cleanUsername,
-                passwordHash = cleanPass
-            ).toInt()
-
-            val createdUser = repository.getUserById(id)
-            if (createdUser != null) {
-                ApiClient.saveUserId(createdUser.id)
-                _currentUser.value = createdUser
-                _currentHome.value = null
-                onResult(true, "Cuenta creada en modo local. Se sincronizará automáticamente al conectar.")
-            } else {
-                onResult(false, "Ocurrió un error al registrar el usuario localmente.")
+                _isSyncing.value = false
+                SyncLogCollector.e("WeHabita:Auth", "Error en registro: ${e.message}", e)
+                onResult(false, "Error de conexión: ${e.localizedMessage ?: e.message}")
             }
         }
     }
@@ -557,26 +475,20 @@ class WeHabitaViewModel(application: Application) : AndroidViewModel(application
         pass: String,
         onSuccess: (UserEntity) -> Unit
     ) {
-        viewModelScope.launch {
-            val id = repository.registerUser(
-                nombre = nombre.trim(),
-                email = email.trim().lowercase(Locale.getDefault()),
-                username = username.trim().lowercase(Locale.getDefault()),
-                passwordHash = pass
-            ).toInt()
-            val user = repository.getUserById(id)
-            if (user != null) {
-                ApiClient.saveUserId(user.id)
-                _currentUser.value = user
-                onSuccess(user)
+        registerAndLogin(nombre, email, username, pass) { success, _ ->
+            if (success && _currentUser.value != null) {
+                onSuccess(_currentUser.value!!)
             }
         }
     }
 
     fun logout() {
+        stopListeningRealtime()
         ApiClient.clearSession()
         _currentUser.value = null
         _currentHome.value = null
+        repository.clearInMemoryData()
+        SyncLogCollector.i("WeHabita:Auth", "Sesión cerrada.")
     }
 
     fun switchUser(user: UserEntity) {
@@ -588,9 +500,8 @@ class WeHabitaViewModel(application: Application) : AndroidViewModel(application
     fun switchHome(home: HomeEntity) {
         _currentHome.value = home
         ApiClient.saveHomeId(home.id)
-        // Auto pull updates for this home from REST API
         viewModelScope.launch {
-            restSyncManager.syncWithServer(home.id)
+            repository.fetchAllHomeData(home.id)
         }
     }
 
@@ -621,6 +532,73 @@ class WeHabitaViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    fun refreshTasks() {
+        val homeId = _currentHome.value?.id ?: ApiClient.getSavedHomeId() ?: return
+        viewModelScope.launch {
+            _isSyncing.value = true
+            repository.fetchTasks(homeId)
+            _isSyncing.value = false
+        }
+    }
+
+    fun refreshPenalties() {
+        val homeId = _currentHome.value?.id ?: ApiClient.getSavedHomeId() ?: return
+        viewModelScope.launch {
+            _isSyncing.value = true
+            repository.fetchPenalties(homeId)
+            _isSyncing.value = false
+        }
+    }
+
+    fun refreshProblems() {
+        val homeId = _currentHome.value?.id ?: ApiClient.getSavedHomeId() ?: return
+        viewModelScope.launch {
+            _isSyncing.value = true
+            repository.fetchProblems(homeId)
+            _isSyncing.value = false
+        }
+    }
+
+    fun refreshShopping() {
+        val homeId = _currentHome.value?.id ?: ApiClient.getSavedHomeId() ?: return
+        viewModelScope.launch {
+            _isSyncing.value = true
+            repository.fetchShopping(homeId)
+            _isSyncing.value = false
+        }
+    }
+
+    fun refreshGoals() {
+        val homeId = _currentHome.value?.id ?: ApiClient.getSavedHomeId() ?: return
+        viewModelScope.launch {
+            _isSyncing.value = true
+            repository.fetchGoals(homeId)
+            _isSyncing.value = false
+        }
+    }
+
+    fun refreshMembers() {
+        val homeId = _currentHome.value?.id ?: ApiClient.getSavedHomeId() ?: return
+        viewModelScope.launch {
+            _isSyncing.value = true
+            repository.fetchMembers(homeId)
+            _isSyncing.value = false
+        }
+    }
+
+    fun refreshDashboard() {
+        val homeId = _currentHome.value?.id ?: ApiClient.getSavedHomeId()
+        viewModelScope.launch {
+            _isSyncing.value = true
+            if (homeId != null) {
+                repository.fetchAllHomeData(homeId)
+            } else {
+                repository.fetchHomes()
+            }
+            _isSyncing.value = false
+        }
+    }
+
     fun createHome(name: String, tipo: String, onCreated: () -> Unit) {
         val user = _currentUser.value ?: return
         viewModelScope.launch {
@@ -629,10 +607,6 @@ class WeHabitaViewModel(application: Application) : AndroidViewModel(application
             if (created != null) {
                 _currentHome.value = created
                 ApiClient.saveHomeId(created.id)
-            }
-            // Auto sync this new home with REST API
-            launch {
-                restSyncManager.syncWithServer(homeId)
             }
             onCreated()
         }
@@ -643,8 +617,6 @@ class WeHabitaViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch {
             val success = repository.joinHomeByInviteCode(code, user.id)
             if (success) {
-                // Refresh homes from server
-                restSyncManager.syncWithServer(null)
                 onResult(true, "¡Te has unido al hogar exitosamente!")
             } else {
                 onResult(false, "Código de hogar no encontrado o inválido.")
@@ -653,24 +625,8 @@ class WeHabitaViewModel(application: Application) : AndroidViewModel(application
     }
 
     private suspend fun getActiveUserAndHome(): Pair<UserEntity, HomeEntity>? {
-        val user = _currentUser.value ?: run {
-            val sId = ApiClient.getSavedUserId()
-            if (sId != null) repository.getUserById(sId)?.also { _currentUser.value = it } else null
-        } ?: return null
-
-        val home = _currentHome.value ?: run {
-            val sHId = ApiClient.getSavedHomeId()
-            if (sHId != null) {
-                repository.getHomeById(sHId)?.also { _currentHome.value = it }
-            } else {
-                val homes = repository.getHomesForUser(user.id).firstOrNull() ?: emptyList()
-                homes.firstOrNull()?.also {
-                    _currentHome.value = it
-                    ApiClient.saveHomeId(it.id)
-                }
-            }
-        } ?: return null
-
+        val user = _currentUser.value ?: return null
+        val home = _currentHome.value ?: return null
         return Pair(user, home)
     }
 
@@ -701,11 +657,8 @@ class WeHabitaViewModel(application: Application) : AndroidViewModel(application
                     fechaInicio = fechaInicio,
                     fechaFin = fechaFin,
                     horarios = horarios,
-                    assignedUserIds = finalAssignees
+                    asignadosIds = finalAssignees
                 )
-                launch {
-                    restSyncManager.syncWithServer(home.id)
-                }
             } catch (e: Throwable) {
                 SyncLogCollector.e("WeHabita:ViewModel", "Error al crear tarea: ${e.message}")
             } finally {
@@ -722,14 +675,23 @@ class WeHabitaViewModel(application: Application) : AndroidViewModel(application
         fechaInicio: String,
         fechaFin: String?,
         activa: Boolean = true,
+        horarios: List<Pair<String, String?>> = emptyList(),
+        asignadosIds: List<Int> = emptyList(),
         onDone: () -> Unit = {}
     ) {
         viewModelScope.launch {
             try {
-                repository.updateTask(taskId, titulo, descripcion, tipo, fechaInicio, fechaFin, activa)
-                val home = _currentHome.value
-                if (home != null) {
-                    launch { restSyncManager.syncWithServer(home.id) }
+                val task = repository.getTasksForHome(0).first().find { it.id == taskId }
+                if (task != null) {
+                    val updated = task.copy(
+                        titulo = titulo,
+                        descripcion = descripcion,
+                        tipo = tipo,
+                        fecha_inicio = fechaInicio,
+                        fecha_fin = fechaFin,
+                        activa = activa
+                    )
+                    repository.updateTask(updated, horarios, asignadosIds)
                 }
             } catch (e: Throwable) {
                 SyncLogCollector.e("WeHabita:ViewModel", "Error al actualizar tarea: ${e.message}")
@@ -742,10 +704,7 @@ class WeHabitaViewModel(application: Application) : AndroidViewModel(application
     fun completeTaskDirectly(taskId: Int, completed: Boolean) {
         viewModelScope.launch {
             try {
-                val user = _currentUser.value ?: run {
-                    val sId = ApiClient.getSavedUserId()
-                    if (sId != null) repository.getUserById(sId)?.also { _currentUser.value = it } else null
-                }
+                val user = _currentUser.value
                 repository.completeTaskDirectly(taskId, completed, user?.id)
             } catch (e: Throwable) {
                 SyncLogCollector.e("WeHabita:ViewModel", "Error al completar tarea directamente: ${e.message}")
@@ -756,9 +715,32 @@ class WeHabitaViewModel(application: Application) : AndroidViewModel(application
     fun deleteTask(taskId: Int) {
         viewModelScope.launch {
             try {
-                repository.deleteTask(taskId)
+                val homeId = _currentHome.value?.id
+                repository.deleteTask(taskId, homeId)
             } catch (e: Throwable) {
                 SyncLogCollector.e("WeHabita:ViewModel", "Error al eliminar tarea: ${e.message}")
+            }
+        }
+    }
+
+    fun deleteTaskSchedule(taskId: Int, scheduleId: Int) {
+        val homeId = _currentHome.value?.id ?: ApiClient.getSavedHomeId() ?: return
+        viewModelScope.launch {
+            try {
+                repository.deleteTaskSchedule(homeId, taskId, scheduleId)
+            } catch (e: Throwable) {
+                SyncLogCollector.e("WeHabita:ViewModel", "Error al eliminar horario de tarea: ${e.message}")
+            }
+        }
+    }
+
+    fun addTaskSchedule(taskId: Int, horaInicio: String, horaFin: String?) {
+        val homeId = _currentHome.value?.id ?: ApiClient.getSavedHomeId() ?: return
+        viewModelScope.launch {
+            try {
+                repository.addTaskSchedule(homeId, taskId, horaInicio, horaFin)
+            } catch (e: Throwable) {
+                SyncLogCollector.e("WeHabita:ViewModel", "Error al agregar horario a tarea: ${e.message}")
             }
         }
     }
@@ -766,15 +748,14 @@ class WeHabitaViewModel(application: Application) : AndroidViewModel(application
     fun markOccurrence(occurrenceId: Int, completed: Boolean, notes: String? = null) {
         viewModelScope.launch {
             try {
-                val user = _currentUser.value ?: run {
-                    val sId = ApiClient.getSavedUserId()
-                    if (sId != null) repository.getUserById(sId)?.also { _currentUser.value = it } else null
-                }
+                val user = _currentUser.value
+                val homeId = _currentHome.value?.id
                 repository.markOccurrence(
                     occurrenceId = occurrenceId,
                     completed = completed,
                     userId = user?.id,
-                    notes = notes
+                    notes = notes,
+                    homeId = homeId
                 )
             } catch (e: Throwable) {
                 SyncLogCollector.e("WeHabita:ViewModel", "Error al marcar ocurrencia: ${e.message}")
@@ -803,15 +784,12 @@ class WeHabitaViewModel(application: Application) : AndroidViewModel(application
                     homeId = home.id,
                     createdBy = user.id,
                     titulo = titulo,
-                    motivo = motivo,
+                    descripcionMotivo = motivo,
                     penalizacion = penalizacion,
                     fechaInicio = fechaInicio,
                     fechaFin = fechaFin,
-                    assignedUserIds = finalAssignees
+                    usuariosIds = finalAssignees
                 )
-                launch {
-                    restSyncManager.syncWithServer(home.id)
-                }
             } catch (e: Throwable) {
                 SyncLogCollector.e("WeHabita:ViewModel", "Error al crear penalización: ${e.message}")
             } finally {
@@ -849,11 +827,8 @@ class WeHabitaViewModel(application: Application) : AndroidViewModel(application
                     createdBy = user.id,
                     titulo = titulo,
                     descripcion = descripcion,
-                    involvedUserIds = finalInvolved
+                    usuariosInvolucradosIds = finalInvolved
                 )
-                launch {
-                    restSyncManager.syncWithServer(home.id)
-                }
             } catch (e: Throwable) {
                 SyncLogCollector.e("WeHabita:ViewModel", "Error al crear problema: ${e.message}")
             } finally {
@@ -866,13 +841,11 @@ class WeHabitaViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch {
             try {
                 val user = _currentUser.value ?: run {
-                    val sId = ApiClient.getSavedUserId()
-                    if (sId != null) repository.getUserById(sId)?.also { _currentUser.value = it } else null
-                } ?: run {
                     onDone()
                     return@launch
                 }
-                repository.addPointOfView(problemId, user.id, contenido)
+                val homeId = _currentHome.value?.id
+                repository.addPointOfView(problemId, user.id, contenido, homeId)
             } catch (e: Throwable) {
                 SyncLogCollector.e("WeHabita:ViewModel", "Error al agregar punto de vista: ${e.message}")
             } finally {
@@ -890,10 +863,18 @@ class WeHabitaViewModel(application: Application) : AndroidViewModel(application
     ) {
         viewModelScope.launch {
             try {
-                repository.updateProblem(problemId, titulo, descripcion, involvedUserIds)
                 val home = _currentHome.value
                 if (home != null) {
-                    launch { restSyncManager.syncWithServer(home.id) }
+                    repository.updateProblemDetails(
+                        problemId = problemId,
+                        homeId = home.id,
+                        titulo = titulo,
+                        descripcion = descripcion,
+                        hablado = false,
+                        solucionado = false,
+                        acuerdo = null,
+                        usuariosInvolucradosIds = involvedUserIds
+                    )
                 }
             } catch (e: Throwable) {
                 SyncLogCollector.e("WeHabita:ViewModel", "Error al editar problema: ${e.message}")
@@ -906,7 +887,8 @@ class WeHabitaViewModel(application: Application) : AndroidViewModel(application
     fun deleteProblem(problemId: Int) {
         viewModelScope.launch {
             try {
-                repository.deleteProblem(problemId)
+                val homeId = _currentHome.value?.id
+                repository.deleteProblem(problemId, homeId)
             } catch (e: Throwable) {
                 SyncLogCollector.e("WeHabita:ViewModel", "Error al eliminar problema: ${e.message}")
             }
@@ -916,7 +898,8 @@ class WeHabitaViewModel(application: Application) : AndroidViewModel(application
     fun deletePointOfView(problemId: Int, povId: Int) {
         viewModelScope.launch {
             try {
-                repository.deletePointOfView(problemId, povId)
+                val homeId = _currentHome.value?.id
+                repository.deletePointOfView(problemId, povId, homeId)
             } catch (e: Throwable) {
                 SyncLogCollector.e("WeHabita:ViewModel", "Error al eliminar punto de vista: ${e.message}")
             }
@@ -926,7 +909,8 @@ class WeHabitaViewModel(application: Application) : AndroidViewModel(application
     fun deletePenalty(penaltyId: Int) {
         viewModelScope.launch {
             try {
-                repository.deletePenalty(penaltyId)
+                val homeId = _currentHome.value?.id
+                repository.deletePenalty(penaltyId, homeId)
             } catch (e: Throwable) {
                 SyncLogCollector.e("WeHabita:ViewModel", "Error al eliminar penalización: ${e.message}")
             }
@@ -941,7 +925,15 @@ class WeHabitaViewModel(application: Application) : AndroidViewModel(application
     ) {
         viewModelScope.launch {
             try {
-                repository.updateProblemDetails(problem, hablado, solucionado, acuerdo)
+                repository.updateProblemDetails(
+                    problemId = problem.id,
+                    homeId = problem.hogar_id,
+                    titulo = problem.titulo,
+                    descripcion = problem.descripcion,
+                    hablado = hablado,
+                    solucionado = solucionado,
+                    acuerdo = acuerdo
+                )
             } catch (e: Throwable) {
                 SyncLogCollector.e("WeHabita:ViewModel", "Error al actualizar problema: ${e.message}")
             }
@@ -957,9 +949,6 @@ class WeHabitaViewModel(application: Application) : AndroidViewModel(application
                     return@launch
                 }
                 repository.createNeedList(home.id, user.id, titulo)
-                launch {
-                    restSyncManager.syncWithServer(home.id)
-                }
             } catch (e: Throwable) {
                 SyncLogCollector.e("WeHabita:ViewModel", "Error al crear lista: ${e.message}")
             } finally {
@@ -981,13 +970,8 @@ class WeHabitaViewModel(application: Application) : AndroidViewModel(application
         val finalNombre = if (productoNombre.isNotBlank()) productoNombre else nombre
         viewModelScope.launch {
             try {
-                val home = _currentHome.value
-                repository.addNeedItem(listaId, finalNombre, cantidad, fechaNecesaria, compradorId, notas)
-                if (home != null) {
-                    launch {
-                        restSyncManager.syncWithServer(home.id)
-                    }
-                }
+                val homeId = _currentHome.value?.id
+                repository.addNeedItem(listaId, finalNombre, cantidad, fechaNecesaria, notas, compradorId, homeId)
             } catch (e: Throwable) {
                 SyncLogCollector.e("WeHabita:ViewModel", "Error al agregar item: ${e.message}")
             } finally {
@@ -999,7 +983,8 @@ class WeHabitaViewModel(application: Application) : AndroidViewModel(application
     fun updateNeedItemStatus(item: NeedItemEntity, newStatus: String) {
         viewModelScope.launch {
             try {
-                repository.updateNeedItemStatus(item, newStatus)
+                val homeId = _currentHome.value?.id
+                repository.updateNeedItemStatus(item, newStatus, homeId)
             } catch (e: Throwable) {
                 SyncLogCollector.e("WeHabita:ViewModel", "Error al actualizar item: ${e.message}")
             }
@@ -1009,7 +994,8 @@ class WeHabitaViewModel(application: Application) : AndroidViewModel(application
     fun deleteNeedItem(itemId: Int) {
         viewModelScope.launch {
             try {
-                repository.deleteNeedItem(itemId)
+                val homeId = _currentHome.value?.id
+                repository.deleteNeedItem(itemId, homeId)
             } catch (e: Throwable) {
                 SyncLogCollector.e("WeHabita:ViewModel", "Error al eliminar item: ${e.message}")
             }
@@ -1039,12 +1025,9 @@ class WeHabitaViewModel(application: Application) : AndroidViewModel(application
                     titulo = titulo,
                     descripcion = descripcion,
                     tipo = tipo,
-                    fechaLimiteOriginal = finalDate,
+                    fechaLimite = finalDate,
                     puntos = puntos
                 )
-                launch {
-                    restSyncManager.syncWithServer(home.id)
-                }
             } catch (e: Throwable) {
                 SyncLogCollector.e("WeHabita:ViewModel", "Error al crear meta: ${e.message}")
             } finally {
@@ -1067,18 +1050,17 @@ class WeHabitaViewModel(application: Application) : AndroidViewModel(application
 
     fun toggleGoalPoint(point: GoalPointEntity, completed: Boolean) {
         viewModelScope.launch {
-            val user = _currentUser.value ?: run {
-                val sId = ApiClient.getSavedUserId()
-                if (sId != null) repository.getUserById(sId)?.also { _currentUser.value = it } else null
-            } ?: return@launch
-            repository.toggleGoalPoint(point, completed, user.id)
+            val user = _currentUser.value ?: return@launch
+            val homeId = _currentHome.value?.id
+            repository.toggleGoalPoint(point, completed, user.id, homeId)
         }
     }
 
     fun deleteGoal(goalId: Int) {
         viewModelScope.launch {
             try {
-                repository.deleteGoal(goalId)
+                val homeId = _currentHome.value?.id
+                repository.deleteGoal(goalId, homeId)
             } catch (e: Throwable) {
                 SyncLogCollector.e("WeHabita:ViewModel", "Error al eliminar objetivo: ${e.message}")
             }
@@ -1097,7 +1079,10 @@ class WeHabitaViewModel(application: Application) : AndroidViewModel(application
 
     fun updateMemberPrivileges(memberId: Int, privilegeIds: List<Int>) {
         viewModelScope.launch {
-            repository.setMemberPrivileges(memberId, privilegeIds)
+            val homeId = _currentHome.value?.id ?: return@launch
+            val allPrivs = allPrivileges.value
+            val privilegeNames = privilegeIds.mapNotNull { id -> allPrivs.find { it.id == id }?.nombre }
+            repository.updateMemberPrivileges(homeId, memberId, privilegeNames)
         }
     }
 
@@ -1156,4 +1141,101 @@ class WeHabitaViewModel(application: Application) : AndroidViewModel(application
 
     fun getPrivilegesForMember(memberId: Int): Flow<List<PrivilegeEntity>> =
         repository.getPrivilegesForMember(memberId)
+
+    // ==========================================
+    // Server-Sent Events (SSE) Realtime Listener
+    // ==========================================
+    fun startListeningRealtime(forcedHomeId: Int? = null) {
+        val token = ApiClient.getAuthToken()
+        val homeId = forcedHomeId ?: _currentHome.value?.id ?: ApiClient.getSavedHomeId()
+
+        if (token.isNullOrBlank() || homeId == null) {
+            _sseStatus.value = SseConnectionStatus.DISCONNECTED
+            currentListeningHomeId = null
+            realtimeSseJob?.cancel()
+            realtimeSseJob = null
+            return
+        }
+
+        if (currentListeningHomeId == homeId && realtimeSseJob?.isActive == true) {
+            // Already actively listening to this home
+            return
+        }
+
+        realtimeSseJob?.cancel()
+        currentListeningHomeId = homeId
+
+        realtimeSseJob = viewModelScope.launch {
+            var backoffMs = 1000L
+            val maxBackoffMs = 30000L
+
+            while (isActive && currentListeningHomeId == homeId) {
+                val currentToken = ApiClient.getAuthToken()
+                if (currentToken.isNullOrBlank()) {
+                    _sseStatus.value = SseConnectionStatus.DISCONNECTED
+                    break
+                }
+
+                try {
+                    sseRepository.subscribeToHome(
+                        hogarId = homeId,
+                        jwtToken = currentToken,
+                        onStatusChanged = { status ->
+                            _sseStatus.value = status
+                            if (status == SseConnectionStatus.CONNECTED) {
+                                backoffMs = 1000L
+                            }
+                        }
+                    ).collect { event ->
+                        when (event) {
+                            is HomeRealtimeEvent.TaskEvent -> {
+                                SyncLogCollector.i("WeHabita:SSE", "Refrescando tareas por evento ${event.type}")
+                                refreshTasks()
+                            }
+                            is HomeRealtimeEvent.NeedEvent -> {
+                                SyncLogCollector.i("WeHabita:SSE", "Refrescando compras por evento ${event.type}")
+                                refreshShopping()
+                            }
+                            is HomeRealtimeEvent.ProblemEvent -> {
+                                SyncLogCollector.i("WeHabita:SSE", "Refrescando problemas por evento ${event.type}")
+                                refreshProblems()
+                            }
+                            is HomeRealtimeEvent.GoalEvent -> {
+                                SyncLogCollector.i("WeHabita:SSE", "Refrescando metas por evento ${event.type}")
+                                refreshGoals()
+                            }
+                            is HomeRealtimeEvent.PenaltyEvent -> {
+                                SyncLogCollector.i("WeHabita:SSE", "Refrescando penalizaciones por evento ${event.type}")
+                                refreshPenalties()
+                            }
+                            is HomeRealtimeEvent.UnknownEvent -> {
+                                SyncLogCollector.d("WeHabita:SSE", "Evento sin acción directa: ${event.type}")
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    SyncLogCollector.w("WeHabita:SSE", "Stream SSE interrumpido: ${e.message}")
+                }
+
+                if (!isActive || currentListeningHomeId != homeId) break
+
+                SyncLogCollector.i("WeHabita:SSE", "Reconectando SSE al hogar #$homeId en ${backoffMs / 1000}s...")
+                _sseStatus.value = SseConnectionStatus.CONNECTING
+                delay(backoffMs)
+                backoffMs = (backoffMs * 2).coerceAtMost(maxBackoffMs)
+            }
+        }
+    }
+
+    fun stopListeningRealtime() {
+        currentListeningHomeId = null
+        realtimeSseJob?.cancel()
+        realtimeSseJob = null
+        _sseStatus.value = SseConnectionStatus.DISCONNECTED
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        stopListeningRealtime()
+    }
 }

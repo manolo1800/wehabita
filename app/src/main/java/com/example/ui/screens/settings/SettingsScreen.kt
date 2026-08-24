@@ -25,6 +25,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.ui.components.MemberAvatar
+import com.example.ui.components.AppMessagePopupDialog
+import com.example.ui.components.PopupMessage
+import com.example.ui.components.PopupMessageType
+import com.example.ui.components.UserFriendlyErrorHelper
 import com.example.ui.theme.*
 import com.example.viewmodel.WeHabitaViewModel
 import kotlinx.coroutines.launch
@@ -40,6 +44,12 @@ fun SettingsScreen(
     val currentMember by viewModel.currentMember.collectAsState()
     val clipboardManager = LocalClipboardManager.current
     var copiedText by remember { mutableStateOf<String?>(null) }
+    var popupMessage by remember { mutableStateOf<PopupMessage?>(null) }
+
+    AppMessagePopupDialog(
+        popupMessage = popupMessage,
+        onDismiss = { popupMessage = null }
+    )
 
     Scaffold(
         topBar = {
@@ -189,7 +199,6 @@ fun SettingsScreen(
                 val lastSyncStatus by viewModel.lastSyncStatus.collectAsState()
                 val isSyncing by viewModel.isSyncing.collectAsState()
                 val pendingCount by viewModel.pendingSyncCount.collectAsState()
-                var syncFeedback by remember { mutableStateOf<String?>(null) }
                 val scope = rememberCoroutineScope()
 
                 Text(
@@ -268,21 +277,6 @@ fun SettingsScreen(
                             }
                         }
 
-                        if (syncFeedback != null) {
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = ElegantPurpleContainer.copy(alpha = 0.15f),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text(
-                                    text = syncFeedback ?: "",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = ElegantPurplePrimary,
-                                    modifier = Modifier.padding(10.dp)
-                                )
-                            }
-                        }
-
                         if (showUrlConfig) {
                             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 OutlinedTextField(
@@ -307,9 +301,18 @@ fun SettingsScreen(
                             Button(
                                 onClick = {
                                     viewModel.updateRestServerUrl(serverUrlInput)
-                                    syncFeedback = "Sincronizando con los servicios REST..."
                                     viewModel.syncWithRestServer { success, msg ->
-                                        syncFeedback = msg
+                                        popupMessage = if (success) {
+                                            PopupMessage(
+                                                title = "Sincronización Completada",
+                                                description = "Los datos del hogar se han sincronizado correctamente con el servidor.",
+                                                type = PopupMessageType.SUCCESS,
+                                                icon = Icons.Outlined.CheckCircle,
+                                                buttonText = "Aceptar"
+                                            )
+                                        } else {
+                                            UserFriendlyErrorHelper.formatMessage(msg, defaultTitle = "Error de Sincronización")
+                                        }
                                     }
                                 },
                                 enabled = !isSyncing,
@@ -330,9 +333,18 @@ fun SettingsScreen(
                             OutlinedButton(
                                 onClick = {
                                     viewModel.updateRestServerUrl(serverUrlInput)
-                                    syncFeedback = "Probando endpoint REST (/api/health)..."
                                     viewModel.testRestApiConnection(serverUrlInput) { success, msg ->
-                                        syncFeedback = msg
+                                        popupMessage = if (success) {
+                                            PopupMessage(
+                                                title = "Conexión Exitosa",
+                                                description = "El servidor REST responde correctamente y está listo para operar.",
+                                                type = PopupMessageType.SUCCESS,
+                                                icon = Icons.Outlined.CheckCircle,
+                                                buttonText = "Excelente"
+                                            )
+                                        } else {
+                                            UserFriendlyErrorHelper.formatMessage(msg, defaultTitle = "Fallo de Conexión")
+                                        }
                                     }
                                 },
                                 enabled = !isSyncing,
@@ -353,14 +365,14 @@ fun SettingsScreen(
                         ) {
                             Column(modifier = Modifier.padding(10.dp)) {
                                 Text(
-                                    text = "💡 Arquitectura Offline-First con SQLite & REST API:",
+                                    text = "💡 Servicios REST & Base de Datos Compartida:",
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 12.sp,
                                     color = ElegantPurplePrimary
                                 )
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Text(
-                                    text = "• Las acciones se guardan instantáneamente en la base de datos local SQLite (Room) para funcionar 100% sin conexión.\n• Cuando no hay conexión, las operaciones se registran en una cola local protegida.\n• Al recuperar conexión o pulsar 'Sincronizar Servicios', se envían automáticamente todas las modificaciones pendientes a http://192.168.0.105:3002/api/.",
+                                    text = "• La aplicación sincroniza directamente con los servicios del hogar en tiempo real.\n• El token de autenticación y la información activa se guardan de forma segura.\n• Todas las creaciones, ediciones y penalizaciones se reflejan de inmediato para todos los integrantes.",
                                     fontSize = 11.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -412,7 +424,13 @@ fun SettingsScreen(
                                             onClick = {
                                                 val text = viewModel.getDiagnosticLogsAsText()
                                                 clipboardManager.setText(AnnotatedString(text))
-                                                syncFeedback = "¡Logs de diagnóstico copiados al portapapeles!"
+                                                popupMessage = PopupMessage(
+                                                    title = "Logs Copiados",
+                                                    description = "Los registros de diagnóstico han sido copiados al portapapeles.",
+                                                    type = PopupMessageType.INFO,
+                                                    icon = Icons.Outlined.ContentCopy,
+                                                    buttonText = "Entendido"
+                                                )
                                             },
                                             modifier = Modifier.weight(1f)
                                         ) {

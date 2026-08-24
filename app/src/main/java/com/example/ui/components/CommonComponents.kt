@@ -22,6 +22,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.local.entities.HomeEntity
 import com.example.data.local.entities.UserEntity
+import com.example.data.remote.sse.SseConnectionStatus
 import com.example.ui.theme.*
 
 @Composable
@@ -172,7 +173,7 @@ fun WeHabitaTopAppBar(
 enum class NavigationDestination(val label: String, val icon: ImageVector, val selectedIcon: ImageVector) {
     DASHBOARD("Inicio", Icons.Outlined.Dashboard, Icons.Filled.Dashboard),
     TASKS("Tareas", Icons.Outlined.CheckCircleOutline, Icons.Filled.CheckCircle),
-    CONFLICTS("Convivencia", Icons.Outlined.Forum, Icons.Filled.Forum),
+    CONFLICTS("Convivir", Icons.Outlined.Forum, Icons.Filled.Forum),
     SHOPPING("Compras", Icons.Outlined.ShoppingCart, Icons.Filled.ShoppingCart),
     MORE("Más", Icons.Outlined.Apps, Icons.Filled.Apps)
 }
@@ -188,7 +189,8 @@ fun WeHabitaBottomBar(
     ) {
         NavigationBar(
             containerColor = Color.Transparent,
-            tonalElevation = 0.dp
+            tonalElevation = 0.dp,
+            windowInsets = WindowInsets.navigationBars
         ) {
             NavigationDestination.values().forEach { destination ->
                 val selected = currentDestination == destination
@@ -198,16 +200,24 @@ fun WeHabitaBottomBar(
                     icon = {
                         Icon(
                             imageVector = if (selected) destination.selectedIcon else destination.icon,
-                            contentDescription = destination.label
+                            contentDescription = destination.label,
+                            modifier = Modifier.size(22.dp)
                         )
                     },
                     label = {
                         Text(
                             text = destination.label,
-                            style = MaterialTheme.typography.labelSmall,
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontSize = 11.sp,
+                                letterSpacing = (-0.2).sp
+                            ),
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis,
                             fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
                         )
                     },
+                    alwaysShowLabel = true,
                     colors = NavigationBarItemDefaults.colors(
                         selectedIconColor = OnSageGreenContainer,
                         selectedTextColor = EarthyDarkText,

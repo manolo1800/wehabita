@@ -2,9 +2,11 @@ package com.example.ui.screens.penalties
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -33,7 +35,12 @@ fun PenaltiesScreen(
 ) {
     val penalties by viewModel.penalties.collectAsState()
     val members by viewModel.homeMembers.collectAsState()
+    val currentHome by viewModel.currentHome.collectAsState()
     val userMap = members.associate { it.user.id to it.user }
+
+    LaunchedEffect(currentHome?.id) {
+        viewModel.refreshPenalties()
+    }
 
     var filterStatus by remember { mutableStateOf("all") }
     val canApply = viewModel.hasPrivilege("aplicar_penalizaciones")
@@ -81,25 +88,27 @@ fun PenaltiesScreen(
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Filter Chips
+            // Filter Chips (Responsive Horizontal Scroll)
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 FilterChip(
                     selected = filterStatus == "all",
                     onClick = { filterStatus = "all" },
-                    label = { Text("Todas (${penalties.size})") }
+                    label = { Text("Todas (${penalties.size})", maxLines = 1, softWrap = false) }
                 )
                 FilterChip(
                     selected = filterStatus == "activa",
                     onClick = { filterStatus = "activa" },
-                    label = { Text("Activas (${penalties.count { it.estado == "activa" }})") }
+                    label = { Text("Activas (${penalties.count { it.estado == "activa" }})", maxLines = 1, softWrap = false) }
                 )
                 FilterChip(
                     selected = filterStatus == "cumplida",
                     onClick = { filterStatus = "cumplida" },
-                    label = { Text("Cumplidas (${penalties.count { it.estado == "cumplida" }})") }
+                    label = { Text("Cumplidas (${penalties.count { it.estado == "cumplida" }})", maxLines = 1, softWrap = false) }
                 )
             }
 

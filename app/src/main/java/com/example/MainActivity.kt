@@ -47,6 +47,7 @@ fun WeHabitaApp(viewModel: WeHabitaViewModel) {
     val allUsers by viewModel.allUsers.collectAsState()
     val currentHome by viewModel.currentHome.collectAsState()
     val userHomes by viewModel.userHomes.collectAsState()
+    val sseStatus by viewModel.sseStatus.collectAsState()
 
     var currentDestination by remember { mutableStateOf(NavigationDestination.DASHBOARD) }
 
