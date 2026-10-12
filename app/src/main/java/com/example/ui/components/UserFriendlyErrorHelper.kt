@@ -51,6 +51,7 @@ object UserFriendlyErrorHelper {
             lower.contains("ehostunreach") ||
             lower.contains("connection refused") ||
             lower.contains("192.168.") ||
+            lower.contains("mayorealo.com") ||
             lower.contains("servidor rest") ||
             lower.contains("error de conexión")
         ) {
@@ -162,7 +163,8 @@ object UserFriendlyErrorHelper {
         // 8. Mensaje genérico limpio (sin mostrar URLs, IPs ni JSON crudo)
         val cleanMsg = rawMessage
             .replace(Regex("https?://\\S+"), "")
-            .replace(Regex("/\\d+\\.\\d+\\.\\d+\\.\\d+:\\d+"), "")
+            .replace(Regex("/\\d+\\.\\d+\\.\\d+\\.\\d+(:\\d+)?"), "")
+            .replace(Regex("/?[\\w.-]*mayorealo\\.com(:\\d+)?"), "")
             .replace(Regex("\\{.*\\}"), "")
             .trim()
 

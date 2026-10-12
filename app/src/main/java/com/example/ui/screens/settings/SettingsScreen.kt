@@ -194,7 +194,7 @@ fun SettingsScreen(
             // REST Services Server Connection & Offline Sync Card
             item {
                 val currentRestUrl by viewModel.restServerUrl.collectAsState()
-                var serverUrlInput by remember { mutableStateOf(currentRestUrl) }
+                var serverUrlInput by remember(currentRestUrl) { mutableStateOf(currentRestUrl) }
                 var showUrlConfig by remember { mutableStateOf(false) }
                 val lastSyncStatus by viewModel.lastSyncStatus.collectAsState()
                 val isSyncing by viewModel.isSyncing.collectAsState()
@@ -286,7 +286,7 @@ fun SettingsScreen(
                                         viewModel.updateRestServerUrl(it)
                                     },
                                     label = { Text("URL Base del Servidor REST") },
-                                    placeholder = { Text("http://192.168.0.105:3002/api/") },
+                                    placeholder = { Text("https://wehabita.mayorealo.com/api/") },
                                     singleLine = true,
                                     modifier = Modifier.fillMaxWidth()
                                 )

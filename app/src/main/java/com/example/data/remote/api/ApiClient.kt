@@ -19,7 +19,7 @@ object ApiClient {
     private const val KEY_BASE_URL = "base_url"
     private const val KEY_USER_ID = "saved_user_id"
     private const val KEY_HOME_ID = "saved_home_id"
-    private const val DEFAULT_BASE_URL = "http://192.168.0.105:3002/api/"
+    private const val DEFAULT_BASE_URL = "https://wehabita.mayorealo.com/api/"
 
     @Volatile
     private var currentBaseUrl: String = DEFAULT_BASE_URL
@@ -77,12 +77,14 @@ object ApiClient {
         if (prefs == null) {
             prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             
-            // Restore Base URL if saved
+            // Restore Base URL if saved, upgrading any legacy local IP
             val savedBaseUrl = prefs?.getString(KEY_BASE_URL, null)
-            if (!savedBaseUrl.isNullOrBlank()) {
+            if (!savedBaseUrl.isNullOrBlank() && !savedBaseUrl.contains("192.168.0.105")) {
                 currentBaseUrl = savedBaseUrl
                 retrofit = buildRetrofit(currentBaseUrl)
                 service = retrofit.create(WeHabitaApiService::class.java)
+            } else {
+                setBaseUrl(DEFAULT_BASE_URL)
             }
 
             // Restore Auth Token if saved
